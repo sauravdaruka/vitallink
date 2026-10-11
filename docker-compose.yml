@@ -1,0 +1,20 @@
+services:
+  postgres:
+    # Keep in sync with test.postgres.image in src/test/resources/config/application.yml.
+    image: postgres:18
+    environment:
+      POSTGRES_DB: ${DB_NAME:-vitallink}
+      POSTGRES_USER: ${DB_USER:-vitallink}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-vitallink}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  postgres-data:

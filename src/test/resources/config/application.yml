@@ -1,0 +1,6 @@
+# Test-only settings. Spring Boot merges this file with src/main/resources/application.yml;
+# being under config/, it does not replace the main file.
+test:
+  postgres:
+    # Keep in sync with the image in docker-compose.yml.
+    image: postgres:18
