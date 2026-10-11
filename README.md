@@ -28,6 +28,46 @@ The brief leaves some things open. These are the assumptions I made, and the rea
 | A6 | `ACCEPTED` means the reading is stored in PostgreSQL. Alerts are evaluated afterwards, usually within seconds. | Once the device gets `ACCEPTED`, it deletes its own copy of the reading. If we said `ACCEPTED` before saving and then crashed, the reading would be lost for good. |
 | A7 | The project ships with a throwaway default database password and demo device API keys, for local Docker only. In production, every credential comes from a secret manager through environment variables, and demo data is never loaded. | The brief asks for both "no secrets in the repo" and "run with one command". A local-only password protects nothing real, and it lets `docker compose up` work without any setup. |
 | A8 | Scale numbers I designed for are estimates built from the brief's figures. See [Scale assumptions](#scale-assumptions). | The brief gives devices and readings per day, but not patients, batch size, coaches or alert rates. I need those numbers to size partitions, indexes and the database. |
+| A9 | Every request is a batch. A single reading is a batch of one. A batch holds at most 500 readings. | One format means the duplicate, validation and partial-acceptance rules are written and tested once. The limit stops a device that was offline for days from holding a database connection with one huge request. |
+| A10 | When a device retries, it sends the reading unchanged: the same `readingId` and the same `measuredAt`. | The duplicate check uses device, `readingId` and `measuredAt` together, because PostgreSQL needs the partition column in every unique key. A device that changed `measuredAt` on a retry would have its reading stored twice. That would be a firmware bug, so I don't make every insert pay for an extra check. Instead, a periodic query can find such repeats and flag the firmware. |
+
+## Sending readings
+
+`POST /v1/readings` with the device's key in the `X-Device-Key` header. `patientId` is optional; if it is sent, it must be the patient the device is assigned to.
+
+```json
+{
+  "patientId": "patient-001",
+  "readings": [
+    {"readingId": "0b8f0c4e-6a1e-4c55-9f3a-1d2e3f4a5b6c", "metricType": "BLOOD_PRESSURE",
+     "systolic": 182, "diastolic": 111, "pulse": 74, "measuredAt": "2026-10-12T07:02:00Z"}
+  ]
+}
+```
+
+The response is `200` with one result per reading, in the same order:
+
+```json
+{"results": [{"readingId": "0b8f0c4e-6a1e-4c55-9f3a-1d2e3f4a5b6c", "status": "ACCEPTED"}]}
+```
+
+| Result | Meaning | What the device should do |
+|---|---|---|
+| `ACCEPTED` | stored in PostgreSQL | delete its copy |
+| `DUPLICATE` | already stored earlier (or twice in this batch) | delete its copy |
+| `REJECTED` | invalid, with a `reason`; not stored | don't retry; report it |
+
+Whole-request errors use the standard JSON error format (RFC 9457):
+
+| Status | When |
+|---|---|
+| `400` | the body is missing, malformed or has no readings |
+| `401` | the key is missing, unknown or revoked |
+| `403` | `patientId` doesn't match the device's patient |
+| `413` | more than 500 readings |
+| `503` + `Retry-After` | the database is overloaded; retry after a short, random delay |
+
+A reading is rejected if it is more than 30 days old or more than 5 minutes in the future.
 
 ## Scale assumptions
 

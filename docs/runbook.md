@@ -50,7 +50,26 @@ The database is loaded with demo devices on startup (`src/main/resources/db/seed
 |---|---|---|
 | No key | `curl -i -X POST localhost:8080/v1/readings` | `401` |
 | Revoked key | `curl -i -X POST localhost:8080/v1/readings -H 'X-Device-Key: local-key-bp-003-old'` | `401` |
-| Valid key | `curl -i -X POST localhost:8080/v1/readings -H 'X-Device-Key: local-key-bp-001'` | not `401` (`404` until the ingest endpoint exists) |
+| Valid key, no body | `curl -i -X POST localhost:8080/v1/readings -H 'X-Device-Key: local-key-bp-001'` | `400` (the key was accepted) |
+
+## Send a reading
+
+Happy path, then the same reading again (the duplicate path):
+
+```bash
+BODY=$(cat <<JSON
+{"readings": [{"readingId": "$(uuidgen)", "metricType": "BLOOD_PRESSURE",
+  "systolic": 182, "diastolic": 111, "pulse": 74,
+  "measuredAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"}]}
+JSON
+)
+curl -s -X POST localhost:8080/v1/readings -H 'X-Device-Key: local-key-bp-001' \
+  -H 'Content-Type: application/json' -d "$BODY"   # {"results":[{..."status":"ACCEPTED"}]}
+curl -s -X POST localhost:8080/v1/readings -H 'X-Device-Key: local-key-bp-001' \
+  -H 'Content-Type: application/json' -d "$BODY"   # {"results":[{..."status":"DUPLICATE"}]}
+```
+
+Check where it was stored: `docker compose exec postgres psql -U vitallink -d vitallink -c 'select tableoid::regclass, * from readings'` shows today's daily partition.
 
 ## Build and test
 

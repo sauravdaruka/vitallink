@@ -40,9 +40,9 @@ class DeviceAuthenticationTest {
 
     @Test
     void requestWithAValidKeyGetsPastAuthentication() throws Exception {
-        // There is no ingest endpoint yet, so 404 here means the key was accepted.
+        // No body, so the endpoint answers 400. Getting that far means the key was accepted.
         mvc.perform(post("/v1/readings").header(DeviceApiKeyFilter.HEADER, "local-key-bp-001"))
-                .andExpect(status().isNotFound());
+                .andExpect(status().isBadRequest());
     }
 
     @Test

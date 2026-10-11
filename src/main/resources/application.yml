@@ -7,6 +7,10 @@ spring:
   autoconfigure:
     # We authenticate devices with API keys, so Spring Boot's generated login user is not needed.
     exclude: org.springframework.boot.security.autoconfigure.UserDetailsServiceAutoConfiguration
+  mvc:
+    problemdetails:
+      # Errors are returned in the standard JSON error format (RFC 9457).
+      enabled: true
   flyway:
     # db/seed holds local demo data. Production sets FLYWAY_LOCATIONS=classpath:db/migration.
     locations: ${FLYWAY_LOCATIONS:classpath:db/migration,classpath:db/seed}
@@ -26,6 +30,11 @@ readings:
     # days-back also matches the oldest reading we accept.
     days-back: 30
     days-ahead: 30
+  ingest:
+    # Bigger batches get 413, so one request can't hold a database connection for long.
+    max-batch-size: 500
+    # How far ahead of our clock a reading's measuredAt may be. Device clocks drift a little.
+    max-clock-skew: 5m
 
 management:
   endpoints:
