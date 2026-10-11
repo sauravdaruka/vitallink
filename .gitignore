@@ -1,0 +1,18 @@
+# Build output
+target/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# OS
+.DS_Store
+
+# Local secrets and config: commit .env.example, never .env
+.env
+*.local.yml
+
+# Logs and load-test output
+*.log
+loadtest/results/
