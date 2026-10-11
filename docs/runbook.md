@@ -35,6 +35,23 @@ How to start, check, stop and fix the service on a laptop. This grows as more pa
 | Database is reachable | `docker compose exec postgres psql -U vitallink -d vitallink -c 'select 1'` | `1` |
 | Migrations that have run | `docker compose exec postgres psql -U vitallink -d vitallink -c 'select version, description, success from flyway_schema_history'` | one row per migration |
 
+## Demo devices and keys
+
+The database is loaded with demo devices on startup (`src/main/resources/db/seed`). These keys are for local use only.
+
+| Device | Patient | API key (`X-Device-Key` header) |
+|---|---|---|
+| `bp-001` | `patient-001` | `local-key-bp-001` |
+| `bp-002` | `patient-002` | `local-key-bp-002` |
+| `bp-003` | `patient-003` | `local-key-bp-003` |
+| `bp-003` | `patient-003` | `local-key-bp-003-old` (revoked: always rejected) |
+
+| Check | Command | Expected |
+|---|---|---|
+| No key | `curl -i -X POST localhost:8080/v1/readings` | `401` |
+| Revoked key | `curl -i -X POST localhost:8080/v1/readings -H 'X-Device-Key: local-key-bp-003-old'` | `401` |
+| Valid key | `curl -i -X POST localhost:8080/v1/readings -H 'X-Device-Key: local-key-bp-001'` | not `401` (`404` until the ingest endpoint exists) |
+
 ## Build and test
 
 | Task | Command |
@@ -77,4 +94,5 @@ Every setting has a local default, so nothing needs to be set to run locally. To
 | `Connection refused` to localhost:5432 | the database isn't running or isn't healthy yet | `docker compose ps`, then wait for `(healthy)` |
 | Tests fail with `Could not find a valid Docker environment` | Docker isn't running | start Docker and re-run |
 | Startup fails with `Migration checksum mismatch` | a migration file that already ran was edited | never edit an applied migration; add a new one. Locally, `docker compose down -v` resets the database |
+| A request with a valid key gets `401` | the seed data didn't load, or the key was typed with extra spaces | check `select * from devices` in psql; seed data loads only when `FLYWAY_LOCATIONS` includes `classpath:db/seed` (the default) |
 | Build fails at `spotless:check` | code isn't formatted | `./mvnw spotless:apply` |

@@ -4,6 +4,12 @@ spring:
   threads:
     virtual:
       enabled: true
+  autoconfigure:
+    # We authenticate devices with API keys, so Spring Boot's generated login user is not needed.
+    exclude: org.springframework.boot.security.autoconfigure.UserDetailsServiceAutoConfiguration
+  flyway:
+    # db/seed holds local demo data. Production sets FLYWAY_LOCATIONS=classpath:db/migration.
+    locations: ${FLYWAY_LOCATIONS:classpath:db/migration,classpath:db/seed}
   datasource:
     url: ${DB_URL:jdbc:postgresql://localhost:5432/vitallink}
     username: ${DB_USER:vitallink}
