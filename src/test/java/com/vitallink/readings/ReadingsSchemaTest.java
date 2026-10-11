@@ -26,7 +26,8 @@ class ReadingsSchemaTest {
             ON CONFLICT DO NOTHING
             """;
 
-    private final Timestamp measuredAt = Timestamp.from(Instant.parse("2026-10-01T07:02:00Z"));
+    // Far outside the window the app keeps partitions for, so these readings always go to the default partition.
+    private final Timestamp measuredAt = Timestamp.from(Instant.parse("2000-01-01T07:02:00Z"));
 
     @Autowired
     private JdbcTemplate jdbc;

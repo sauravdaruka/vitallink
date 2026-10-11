@@ -14,6 +14,13 @@ spring:
       # Fail fast when the pool is exhausted instead of letting requests pile up.
       connection-timeout: 2000
 
+readings:
+  partitions:
+    # Daily partitions are kept ready this many days back and ahead (UTC days).
+    # days-back also matches the oldest reading we accept.
+    days-back: 30
+    days-ahead: 30
+
 management:
   endpoints:
     web:
