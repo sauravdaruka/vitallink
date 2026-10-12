@@ -1,6 +1,6 @@
 # Local runbook
 
-How to start, check, stop and fix the service on a laptop. This grows as more parts are added (load test next).
+How to start, check, load-test, stop and fix the service on a laptop.
 
 ## What you need
 - Docker (running). That's all to run the service.
@@ -134,6 +134,24 @@ Thresholds belong to the care-plan system, which announces changes with a `Thres
 5. Put the limit back to 180 by publishing the same event with `"above":180`.
 
 **Redis down:** `docker compose stop redis`, then `send 150`. The reading is still `ACCEPTED`; thresholds come from PostgreSQL and the service log says "Threshold cache unavailable" once. `docker compose start redis` and the log says "Threshold cache works again".
+
+## Run the load test
+
+With the stack running from `docker compose up --build -d`:
+```
+docker run --rm -i --network vitallink_default -e BASE_URL=http://app:8080 grafana/k6:2.3.0 run - < loadtest/burst.js
+```
+It takes about 100 seconds and prints requests per second, latency (p50, p95, p99) and whether the two thresholds passed (fewer than 1% errors, p95 under 500 ms). The network name comes from the project folder name; if yours differs, find it with `docker network ls`.
+
+While it runs, these show where time goes:
+
+| What | Command |
+|---|---|
+| CPU of each container | `docker stats` |
+| Requests waiting for a database connection | `curl -s localhost:8080/actuator/metrics/hikaricp.connections.pending` |
+| Alert backlog | `docker compose exec postgres psql -U vitallink -d vitallink -c 'select count(*) from outbox where sent_at is null'` |
+
+To try a bigger connection pool: `DB_POOL_SIZE=20 docker compose up -d app`. The test leaves millions of rows behind; `docker compose down -v` starts again from an empty database.
 
 ## Build and test
 
