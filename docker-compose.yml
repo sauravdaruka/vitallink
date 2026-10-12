@@ -16,5 +16,24 @@ services:
       timeout: 3s
       retries: 10
 
+  rabbitmq:
+    # Keep in sync with test.rabbitmq.image in src/test/resources/config/application.yml.
+    image: rabbitmq:4.3-management
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-vitallink}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-vitallink}
+    ports:
+      - "5672:5672"
+      # Management UI: http://localhost:15672
+      - "15672:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
 volumes:
   postgres-data:
+  rabbitmq-data:

@@ -5,6 +5,7 @@ import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.context.annotation.Bean;
 import org.testcontainers.postgresql.PostgreSQLContainer;
+import org.testcontainers.rabbitmq.RabbitMQContainer;
 import org.testcontainers.utility.DockerImageName;
 
 @TestConfiguration(proxyBeanMethods = false)
@@ -14,5 +15,11 @@ public class TestcontainersConfiguration {
     @ServiceConnection
     PostgreSQLContainer postgresContainer(@Value("${test.postgres.image}") String image) {
         return new PostgreSQLContainer(DockerImageName.parse(image).asCompatibleSubstituteFor("postgres"));
+    }
+
+    @Bean
+    @ServiceConnection
+    RabbitMQContainer rabbitContainer(@Value("${test.rabbitmq.image}") String image) {
+        return new RabbitMQContainer(DockerImageName.parse(image).asCompatibleSubstituteFor("rabbitmq"));
     }
 }

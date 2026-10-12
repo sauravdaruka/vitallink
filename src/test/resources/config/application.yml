@@ -4,3 +4,6 @@ test:
   postgres:
     # Keep in sync with the image in docker-compose.yml.
     image: postgres:18
+  rabbitmq:
+    # Keep in sync with the image in docker-compose.yml.
+    image: rabbitmq:4.3-management

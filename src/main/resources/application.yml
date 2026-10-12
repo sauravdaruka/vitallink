@@ -14,6 +14,26 @@ spring:
   flyway:
     # db/seed holds local demo data. Production sets FLYWAY_LOCATIONS=classpath:db/migration.
     locations: ${FLYWAY_LOCATIONS:classpath:db/migration,classpath:db/seed}
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USER:vitallink}
+    password: ${RABBITMQ_PASSWORD:vitallink}
+    # The relay waits for the broker to confirm each batch before marking events as sent.
+    publisher-confirm-type: simple
+    listener:
+      simple:
+        concurrency: 2
+        max-concurrency: 4
+        prefetch: 10
+        # After the last retry, a failing job goes to the dead-letter queue instead of looping forever.
+        default-requeue-rejected: false
+        retry:
+          enabled: true
+          max-attempts: 5
+          initial-interval: 500ms
+          multiplier: 2
+          max-interval: 5s
   datasource:
     url: ${DB_URL:jdbc:postgresql://localhost:5432/vitallink}
     username: ${DB_USER:vitallink}
@@ -35,6 +55,13 @@ readings:
     max-batch-size: 500
     # How far ahead of our clock a reading's measuredAt may be. Device clocks drift a little.
     max-clock-skew: 5m
+
+outbox:
+  relay:
+    # How often unsent events are picked up. Alert delay is roughly this plus the worker's time.
+    interval: 200ms
+    batch-size: 100
+    confirm-timeout-millis: 5000
 
 management:
   endpoints:

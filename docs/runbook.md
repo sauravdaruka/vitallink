@@ -17,7 +17,7 @@ How to start, check, stop and fix the service on a laptop. This grows as more pa
    ```
    docker compose ps
    ```
-   The `postgres` service should show `(healthy)`.
+   The `postgres` and `rabbitmq` services should both show `(healthy)`.
 
 2. Start the service:
    ```
@@ -71,6 +71,33 @@ curl -s -X POST localhost:8080/v1/readings -H 'X-Device-Key: local-key-bp-001' \
 
 Check where it was stored: `docker compose exec postgres psql -U vitallink -d vitallink -c 'select tableoid::regclass, * from readings'` shows today's daily partition.
 
+## See an alert being raised
+
+The demo data gives `patient-001` (device `bp-001`) the coach `coach-asha`. Send a high reading:
+
+```bash
+BODY=$(cat <<JSON
+{"readings": [{"readingId": "$(uuidgen)", "metricType": "BLOOD_PRESSURE",
+  "systolic": 185, "diastolic": 112, "pulse": 80,
+  "measuredAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"}]}
+JSON
+)
+curl -s -X POST localhost:8080/v1/readings -H 'X-Device-Key: local-key-bp-001' \
+  -H 'Content-Type: application/json' -d "$BODY"
+```
+
+Within a second:
+
+| Check | Command | Expected |
+|---|---|---|
+| The alert | `docker compose exec postgres psql -U vitallink -d vitallink -c 'select id, patient_id, severity, status, assigned_coach_id, breach_count from alerts'` | one `CRITICAL` alert for `coach-asha` |
+| Its history | `... -c 'select alert_id, measured_at, severity, reason from alert_breaches'` | one row per high reading |
+| The coach was notified | `... -c 'select alert_id, coach_id, kind, severity from notifications'` | `OPENED` |
+| Nothing stuck in the outbox | `curl -s localhost:8080/actuator/metrics/outbox.pending` | `0` |
+| Queues | RabbitMQ UI at http://localhost:15672 (user and password `vitallink`) | `alerting.reading-breached` empty, `alerting.reading-breached.dead` empty |
+
+Send more high readings: the same alert's `breach_count` goes up, and a new notification appears only if the severity gets worse.
+
 ## Build and test
 
 | Task | Command |
@@ -114,4 +141,6 @@ Every setting has a local default, so nothing needs to be set to run locally. To
 | Tests fail with `Could not find a valid Docker environment` | Docker isn't running | start Docker and re-run |
 | Startup fails with `Migration checksum mismatch` | a migration file that already ran was edited | never edit an applied migration; add a new one. Locally, `docker compose down -v` resets the database |
 | A request with a valid key gets `401` | the seed data didn't load, or the key was typed with extra spaces | check `select * from devices` in psql; seed data loads only when `FLYWAY_LOCATIONS` includes `classpath:db/seed` (the default) |
+| Alerts aren't appearing | RabbitMQ isn't running, or events are stuck in the outbox | `docker compose ps`; check `outbox.pending` and `outbox.oldest.pending.seconds` in actuator metrics; look for "Could not send outbox events" in the service log |
+| Messages in `alerting.reading-breached.dead` | an alert job failed every retry | read the message in the RabbitMQ UI and the service log, fix the cause, then move it back to the main queue |
 | Build fails at `spotless:check` | code isn't formatted | `./mvnw spotless:apply` |
