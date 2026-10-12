@@ -2,6 +2,10 @@ package com.vitallink.readings.ingest;
 
 import com.vitallink.readings.device.AuthenticatedDevice;
 import com.vitallink.readings.ingest.ReadingResult.Status;
+import com.vitallink.readings.outbox.Outbox;
+import com.vitallink.readings.threshold.Threshold;
+import com.vitallink.readings.threshold.ThresholdEvaluator;
+import com.vitallink.readings.threshold.Thresholds;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Clock;
@@ -22,6 +26,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.ErrorResponseException;
 
 @Service
@@ -30,6 +35,9 @@ class ReadingIngestService {
     private static final Logger log = LoggerFactory.getLogger(ReadingIngestService.class);
 
     private final ReadingWriter writer;
+    private final Thresholds thresholds;
+    private final Outbox outbox;
+    private final TransactionTemplate transactions;
     private final Clock clock;
     private final ReadingValidator validator;
     private final int maxBatchSize;
@@ -38,6 +46,9 @@ class ReadingIngestService {
 
     ReadingIngestService(
             ReadingWriter writer,
+            Thresholds thresholds,
+            Outbox outbox,
+            TransactionTemplate transactions,
             Clock clock,
             MeterRegistry meters,
             // The oldest reading we accept matches the partitions we keep ready, so the two can't drift apart.
@@ -45,6 +56,9 @@ class ReadingIngestService {
             @Value("${readings.ingest.max-clock-skew}") Duration maxClockSkew,
             @Value("${readings.ingest.max-batch-size}") int maxBatchSize) {
         this.writer = writer;
+        this.thresholds = thresholds;
+        this.outbox = outbox;
+        this.transactions = transactions;
         this.clock = clock;
         this.validator = new ReadingValidator(Duration.ofDays(daysBack), maxClockSkew);
         this.maxBatchSize = maxBatchSize;
@@ -93,13 +107,50 @@ class ReadingIngestService {
             }
         }
 
-        Set<UUID> stored = toStore.isEmpty() ? Set.of() : writer.insertNew(device, toStore);
+        Set<UUID> stored = toStore.isEmpty() ? Set.of() : storeAndRaiseEvents(device, toStore);
         positionOfNewReading.forEach((readingId, i) -> results[i] =
                 stored.contains(readingId) ? ReadingResult.accepted(readingId) : ReadingResult.duplicate(readingId));
 
         Arrays.stream(results)
                 .forEach(result -> resultCounters.get(result.status()).increment());
         return List.of(results);
+    }
+
+    /**
+     * Stores the new readings and, in the same transaction, an outbox event for each new one that breaks a
+     * threshold. A duplicate is never stored again, so a retry can never raise a second event.
+     */
+    private Set<UUID> storeAndRaiseEvents(AuthenticatedDevice device, List<ReadingInput> readings) {
+        // Looked up before the transaction starts, so the transaction stays short.
+        List<Threshold> limits = thresholds.forPatient(device.patientId());
+        return transactions.execute(transaction -> {
+            Set<UUID> stored = writer.insertNew(device, readings);
+            for (ReadingInput reading : readings) {
+                if (!stored.contains(reading.readingId())) {
+                    continue;
+                }
+                ThresholdEvaluator.evaluate(reading.systolic(), reading.diastolic(), reading.pulse(), limits)
+                        .ifPresent(breach -> {
+                            UUID eventId = UUID.randomUUID();
+                            outbox.add(
+                                    eventId,
+                                    ReadingBreached.TYPE,
+                                    new ReadingBreached(
+                                            eventId,
+                                            device.deviceId(),
+                                            reading.readingId(),
+                                            device.patientId(),
+                                            reading.metricType(),
+                                            reading.measuredAt(),
+                                            reading.systolic(),
+                                            reading.diastolic(),
+                                            reading.pulse(),
+                                            breach.severity(),
+                                            breach.reason()));
+                        });
+            }
+            return stored;
+        });
     }
 
     private static ErrorResponseException problem(HttpStatus status, String detail) {

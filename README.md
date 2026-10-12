@@ -30,6 +30,7 @@ The brief leaves some things open. These are the assumptions I made, and the rea
 | A8 | Scale numbers I designed for are estimates built from the brief's figures. See [Scale assumptions](#scale-assumptions). | The brief gives devices and readings per day, but not patients, batch size, coaches or alert rates. I need those numbers to size partitions, indexes and the database. |
 | A9 | Every request is a batch. A single reading is a batch of one. A batch holds at most 500 readings. | One format means the duplicate, validation and partial-acceptance rules are written and tested once. The limit stops a device that was offline for days from holding a database connection with one huge request. |
 | A10 | When a device retries, it sends the reading unchanged: the same `readingId` and the same `measuredAt`. | The duplicate check uses device, `readingId` and `measuredAt` together, because PostgreSQL needs the partition column in every unique key. A device that changed `measuredAt` on a retry would have its reading stored twice. That would be a firmware bug, so I don't make every insert pay for an extra check. Instead, a periodic query can find such repeats and flag the firmware. |
+| A11 | A patient without their own thresholds uses program-wide defaults. A patient's own limits for a metric replace the defaults for that metric only. If several limits are broken, the most severe one sets the alert's severity. | Without defaults, a patient missing from the threshold data would never get an alert. That is a silent safety gap. |
 
 ## Sending readings
 
