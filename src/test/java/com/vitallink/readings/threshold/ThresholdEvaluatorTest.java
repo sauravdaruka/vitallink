@@ -3,71 +3,51 @@ package com.vitallink.readings.threshold;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.vitallink.readings.threshold.Threshold.Metric;
-import com.vitallink.readings.threshold.Threshold.Severity;
-import com.vitallink.readings.threshold.ThresholdEvaluator.Breach;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
+/** Patient-safety logic, so the edges are tested exactly: a limit itself is not a breach. */
 class ThresholdEvaluatorTest {
 
-    private static final List<Threshold> DEFAULTS = List.of(
-            new Threshold(Metric.SYSTOLIC, Severity.CRITICAL, 90, 180, false),
-            new Threshold(Metric.SYSTOLIC, Severity.WARNING, 100, 160, false),
-            new Threshold(Metric.DIASTOLIC, Severity.CRITICAL, 50, 110, false),
-            new Threshold(Metric.PULSE, Severity.CRITICAL, 40, 130, false));
+    private static final List<Threshold> LIMITS = List.of(
+            new Threshold(Metric.SYSTOLIC, 90, 180),
+            new Threshold(Metric.DIASTOLIC, 50, 110),
+            new Threshold(Metric.PULSE, 40, 130));
 
     @Test
     void aNormalReadingBreaksNothing() {
-        assertThat(ThresholdEvaluator.evaluate(120, 80, 72, DEFAULTS)).isEmpty();
+        assertThat(ThresholdEvaluator.evaluate(120, 80, 72, LIMITS)).isEmpty();
     }
 
     @Test
-    void aValueOnTheLimitIsNotABreach() {
-        assertThat(ThresholdEvaluator.evaluate(180, 80, 72, DEFAULTS))
-                .contains(new Breach(Severity.WARNING, "systolic 180 above 160 (WARNING)"));
+    void exactlyOnTheLimitIsNotABreach() {
+        assertThat(ThresholdEvaluator.evaluate(180, 110, 130, LIMITS)).isEmpty();
+        assertThat(ThresholdEvaluator.evaluate(90, 50, 40, LIMITS)).isEmpty();
     }
 
     @Test
-    void aWarningBreach() {
-        assertThat(ThresholdEvaluator.evaluate(165, 80, 72, DEFAULTS))
-                .contains(new Breach(Severity.WARNING, "systolic 165 above 160 (WARNING)"));
+    void aboveTheUpperLimitIsABreach() {
+        assertThat(ThresholdEvaluator.evaluate(181, 80, 72, LIMITS)).contains("systolic 181 above 180");
     }
 
     @Test
-    void theMostSevereBreachWinsAndOnlyItIsReported() {
-        assertThat(ThresholdEvaluator.evaluate(185, 80, 72, DEFAULTS))
-                .contains(new Breach(Severity.CRITICAL, "systolic 185 above 180 (CRITICAL)"));
+    void belowTheLowerLimitIsABreach() {
+        assertThat(ThresholdEvaluator.evaluate(85, 55, 72, LIMITS)).contains("systolic 85 below 90");
     }
 
     @Test
-    void everyBreachAtTheWorstSeverityIsListed() {
-        assertThat(ThresholdEvaluator.evaluate(185, 115, 72, DEFAULTS))
-                .contains(new Breach(
-                        Severity.CRITICAL, "systolic 185 above 180 (CRITICAL); diastolic 115 above 110 (CRITICAL)"));
-    }
-
-    @Test
-    void aLowValueIsABreachToo() {
-        assertThat(ThresholdEvaluator.evaluate(85, 55, 72, DEFAULTS))
-                .contains(new Breach(Severity.CRITICAL, "systolic 85 below 90 (CRITICAL)"));
+    void everyBrokenLimitIsInTheReason() {
+        assertThat(ThresholdEvaluator.evaluate(195, 115, 140, LIMITS))
+                .contains("systolic 195 above 180; diastolic 115 above 110; pulse 140 above 130");
     }
 
     @Test
     void aMissingPulseIsNotABreach() {
-        assertThat(ThresholdEvaluator.evaluate(120, 80, null, DEFAULTS)).isEmpty();
+        assertThat(ThresholdEvaluator.evaluate(120, 80, null, LIMITS)).isEmpty();
     }
 
     @Test
-    void aPatientsOwnLimitReplacesTheDefaultForThatMetricOnly() {
-        List<Threshold> withOwnSystolic = new java.util.ArrayList<>(DEFAULTS);
-        withOwnSystolic.add(new Threshold(Metric.SYSTOLIC, Severity.CRITICAL, 90, 170, true));
-
-        assertThat(ThresholdEvaluator.evaluate(175, 80, 72, withOwnSystolic))
-                .contains(new Breach(Severity.CRITICAL, "systolic 175 above 170 (CRITICAL)"));
-        // The default systolic WARNING (above 160) no longer applies to this patient.
-        assertThat(ThresholdEvaluator.evaluate(165, 80, 72, withOwnSystolic)).isEmpty();
-        // Diastolic still uses the default.
-        assertThat(ThresholdEvaluator.evaluate(120, 115, 72, withOwnSystolic))
-                .contains(new Breach(Severity.CRITICAL, "diastolic 115 above 110 (CRITICAL)"));
+    void aPatientWithNoThresholdsGetsNoBreach() {
+        assertThat(ThresholdEvaluator.evaluate(250, 150, 200, List.of())).isEmpty();
     }
 }

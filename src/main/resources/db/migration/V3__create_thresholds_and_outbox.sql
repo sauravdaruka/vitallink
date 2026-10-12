@@ -1,18 +1,14 @@
--- Local copy of alert thresholds owned by the care-plan system (assumption A5).
--- A row with no patient_id is a program-wide default. A patient's own rows for a metric replace the defaults for
--- that metric (assumption A11).
+-- Local copy of each patient's alert thresholds, owned by the care-plan system (assumptions A5, A11). It is kept up
+-- to date from that system's ThresholdsChanged events.
 CREATE TABLE thresholds (
-    patient_id   TEXT,
-    metric       TEXT     NOT NULL,
-    severity     TEXT     NOT NULL,
+    patient_id  TEXT     NOT NULL,
+    metric      TEXT     NOT NULL,
     -- A breach is a value below `below` or above `above`. Either can be empty.
-    below        SMALLINT,
-    above        SMALLINT,
+    below       SMALLINT,
+    above       SMALLINT,
+    PRIMARY KEY (patient_id, metric),
     CONSTRAINT thresholds_metric_check CHECK (metric IN ('SYSTOLIC', 'DIASTOLIC', 'PULSE')),
-    CONSTRAINT thresholds_severity_check CHECK (severity IN ('WARNING', 'CRITICAL')),
-    CONSTRAINT thresholds_limit_check CHECK (below IS NOT NULL OR above IS NOT NULL),
-    -- NULLS NOT DISTINCT: at most one default row per metric and severity, too.
-    CONSTRAINT thresholds_unique UNIQUE NULLS NOT DISTINCT (patient_id, metric, severity)
+    CONSTRAINT thresholds_limit_check CHECK (below IS NOT NULL OR above IS NOT NULL)
 );
 
 -- Events waiting to be sent to the message broker. Written in the same transaction as the readings they

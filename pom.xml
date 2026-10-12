@@ -64,7 +64,7 @@
 			<artifactId>spring-boot-starter-data-redis</artifactId>
 		</dependency>
 
-		<!-- Device API keys now; coach login (OAuth2/OIDC) can be added beside it later -->
+		<!-- Device API keys -->
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-security</artifactId>

@@ -1,6 +1,5 @@
 package com.vitallink.readings.ingest;
 
-import com.vitallink.readings.threshold.Threshold.Severity;
 import java.time.Instant;
 import java.util.UUID;
 
@@ -20,7 +19,6 @@ public record ReadingBreached(
         int systolic,
         int diastolic,
         Integer pulse,
-        Severity severity,
         String reason) {
 
     public static final String TYPE = "ReadingBreached";

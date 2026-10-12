@@ -1,7 +1,5 @@
 package com.vitallink.readings.ingest;
 
-import io.micrometer.core.instrument.Gauge;
-import io.micrometer.core.instrument.MeterRegistry;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -9,9 +7,6 @@ import java.sql.Statement;
 import java.time.Clock;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
-import java.util.HashSet;
-import java.util.Set;
-import java.util.concurrent.atomic.AtomicInteger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -27,7 +22,7 @@ import org.springframework.stereotype.Component;
  * days ahead. Days are UTC days.
  *
  * <p>Runs at startup and every hour. A failure is logged and never stops the app: partitions already exist
- * well ahead, and the default partition catches anything else. Two metrics make a failure visible.
+ * well ahead, and the default partition catches anything else.
  */
 @Component
 class ReadingPartitionMaintainer {
@@ -43,25 +38,16 @@ class ReadingPartitionMaintainer {
     private final Clock clock;
     private final int daysBack;
     private final int daysAhead;
-    private final AtomicInteger readyDaysAhead = new AtomicInteger();
-    private final AtomicInteger defaultPartitionHasRows = new AtomicInteger();
 
     ReadingPartitionMaintainer(
             JdbcTemplate jdbc,
             Clock clock,
             @Value("${readings.partitions.days-back}") int daysBack,
-            @Value("${readings.partitions.days-ahead}") int daysAhead,
-            MeterRegistry meters) {
+            @Value("${readings.partitions.days-ahead}") int daysAhead) {
         this.jdbc = jdbc;
         this.clock = clock;
         this.daysBack = daysBack;
         this.daysAhead = daysAhead;
-        Gauge.builder("readings.partitions.ready.days.ahead", readyDaysAhead, AtomicInteger::get)
-                .description("Days ahead that already have a partition. Alert when this is below 7.")
-                .register(meters);
-        Gauge.builder("readings.partitions.default.has.rows", defaultPartitionHasRows, AtomicInteger::get)
-                .description("1 if the default partition holds any rows. It should always be 0.")
-                .register(meters);
     }
 
     @EventListener(ApplicationReadyEvent.class)
@@ -75,7 +61,6 @@ class ReadingPartitionMaintainer {
         } catch (RuntimeException e) {
             log.error("Could not create readings partitions. New readings still go to the default partition.", e);
         }
-        updateMetrics();
     }
 
     /** Only one app instance creates partitions at a time; the others skip this run. */
@@ -116,24 +101,6 @@ class ReadingPartitionMaintainer {
         } catch (SQLException e) {
             // Usually means the default partition already holds readings for this day.
             log.error("Could not create readings partition for {}: {}", day, e.getMessage());
-        }
-    }
-
-    private void updateMetrics() {
-        try {
-            Set<String> existing = new HashSet<>(jdbc.queryForList(
-                    "SELECT inhrelid::regclass::text FROM pg_inherits WHERE inhparent = 'readings'::regclass",
-                    String.class));
-            LocalDate today = LocalDate.now(clock);
-            int ready = 0;
-            while (ready < daysAhead && existing.contains(partitionName(today.plusDays(ready + 1)))) {
-                ready++;
-            }
-            readyDaysAhead.set(ready);
-            Boolean hasRows = jdbc.queryForObject("SELECT EXISTS (SELECT 1 FROM readings_default)", Boolean.class);
-            defaultPartitionHasRows.set(Boolean.TRUE.equals(hasRows) ? 1 : 0);
-        } catch (RuntimeException e) {
-            log.warn("Could not update readings partition metrics", e);
         }
     }
 

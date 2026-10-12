@@ -1,15 +1,12 @@
 package com.vitallink.readings.threshold;
 
-import java.time.Instant;
-import java.util.UUID;
+import java.util.List;
 
 /**
- * Saved to the outbox with every threshold change, so the cached copy is deleted even if the app crashes or Redis
- * is down at the moment of the change.
- *
- * @param patientId whose own limits changed, or null when the program defaults changed
+ * Published by the care-plan system, which owns thresholds (assumption A5), when a patient's limits change. It
+ * carries the patient's full new set of limits, so applying it twice gives the same result.
  */
-record ThresholdsChanged(UUID eventId, String patientId, Instant changedAt) {
+record ThresholdsChanged(String patientId, List<Threshold> thresholds) {
 
     static final String TYPE = "ThresholdsChanged";
 }

@@ -3,7 +3,6 @@ package com.vitallink.readings.ingest;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.vitallink.readings.TestcontainersConfiguration;
-import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.sql.Timestamp;
 import java.time.Clock;
 import java.time.Instant;
@@ -24,8 +23,6 @@ class ReadingPartitionMaintainerTest {
     @Autowired
     private JdbcTemplate jdbc;
 
-    private final SimpleMeterRegistry meters = new SimpleMeterRegistry();
-
     @Test
     void createsAPartitionForEveryDayFromDaysBackToDaysAhead() {
         maintainerAt("2031-03-10").createPartitions();
@@ -34,7 +31,6 @@ class ReadingPartitionMaintainerTest {
         assertThat(partitionExists("2031-04-09")).isTrue();
         assertThat(partitionExists("2031-02-07")).isFalse();
         assertThat(partitionExists("2031-04-10")).isFalse();
-        assertThat(gauge("readings.partitions.ready.days.ahead")).isEqualTo(30);
     }
 
     @Test
@@ -64,7 +60,7 @@ class ReadingPartitionMaintainerTest {
 
             assertThat(partitionExists("2034-03-10")).isFalse();
             assertThat(partitionExists("2034-03-11")).isTrue();
-            assertThat(gauge("readings.partitions.default.has.rows")).isEqualTo(1);
+            assertThat(partitionOf(readingId)).isEqualTo("readings_default");
         } finally {
             jdbc.update("DELETE FROM readings WHERE reading_id = ?", readingId);
         }
@@ -72,7 +68,7 @@ class ReadingPartitionMaintainerTest {
 
     private ReadingPartitionMaintainer maintainerAt(String day) {
         Clock clock = Clock.fixed(LocalDate.parse(day).atStartOfDay().toInstant(ZoneOffset.UTC), ZoneOffset.UTC);
-        return new ReadingPartitionMaintainer(jdbc, clock, 30, 30, meters);
+        return new ReadingPartitionMaintainer(jdbc, clock, 30, 30);
     }
 
     private boolean partitionExists(String day) {
@@ -92,9 +88,5 @@ class ReadingPartitionMaintainerTest {
     private String partitionOf(UUID readingId) {
         return jdbc.queryForObject(
                 "SELECT tableoid::regclass::text FROM readings WHERE reading_id = ?", String.class, readingId);
-    }
-
-    private double gauge(String name) {
-        return meters.get(name).gauge().value();
     }
 }

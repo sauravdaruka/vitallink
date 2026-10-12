@@ -8,7 +8,7 @@ What this service covers:
 - Ingest blood pressure readings, one at a time or in batches
 - Ignore duplicate readings when a device retries
 - Store readings and raise alerts to care coaches in the background
-- Read APIs for a patient's readings and a coach's alert queue
+- Read APIs for a patient's readings and a coach's alerts
 
 What I am not doing, and why:
 - Other metric types (glucose, SpO2, weight): one metric done fully is enough to show the design
@@ -30,10 +30,11 @@ The brief leaves some things open. These are the assumptions I made, and the rea
 | A8 | Scale numbers I designed for are estimates built from the brief's figures. See [Scale assumptions](#scale-assumptions). | The brief gives devices and readings per day, but not patients, batch size, coaches or alert rates. I need those numbers to size partitions, indexes and the database. |
 | A9 | Every request is a batch. A single reading is a batch of one. A batch holds at most 500 readings. | One format means the duplicate, validation and partial-acceptance rules are written and tested once. The limit stops a device that was offline for days from holding a database connection with one huge request. |
 | A10 | When a device retries, it sends the reading unchanged: the same `readingId` and the same `measuredAt`. | The duplicate check uses device, `readingId` and `measuredAt` together, because PostgreSQL needs the partition column in every unique key. A device that changed `measuredAt` on a retry would have its reading stored twice. That would be a firmware bug, so I don't make every insert pay for an extra check. Instead, a periodic query can find such repeats and flag the firmware. |
-| A11 | A patient without their own thresholds uses program-wide defaults. A patient's own limits for a metric replace the defaults for that metric only. If several limits are broken, the most severe one sets the alert's severity. | Without defaults, a patient missing from the threshold data would never get an alert. That is a silent safety gap. |
-| A12 | A patient has at most one open alert per metric. New high readings update that alert instead of creating new ones, and every reading stays in its history. The coach is notified only when an alert is first opened and when it becomes more severe, so they aren't flooded with repeats. | About 150 alerts per coach per day would make coaches start ignoring them. One alert per problem, plus a full history of every breach, keeps the coach focused without losing how the condition developed (a gradual rise or a sudden spike). |
-| A13 | A patient has one coach per program, and an alert goes to the coach of the program it belongs to (blood pressure → hypertension coach). If there is no coach, the alert waits in an unassigned queue. | A diabetes coach shouldn't be interrupted by a blood pressure alert. An alert must never be dropped just because nobody is assigned. |
-| A14 | Thresholds are changed through a small admin API protected by one admin key (`ADMIN_API_KEY`). Each call replaces the full set of limits for the program defaults or for one patient. In production this would be staff single sign-on, with each change recorded against the person who made it. | The brief doesn't say how thresholds change, but the cache needs one place where changes happen so it can delete its old copy. A change made straight in the database would not reach the cache until the copy expires. |
+| A11 | Every patient has their own thresholds per metric (e.g. systolic below 90 or above 180), and one level of alert: breaking any limit raises an alert. The thresholds are a local copy owned by the care-plan system (A5). | The brief: "each patient has thresholds per metric". One level is the smallest version that shows the full path. |
+| A12 | Every reading that breaks a threshold raises its own alert, and the patient's coach gets one notification for it. A device retry never raises a second alert. | The brief: "a reading that breaches a threshold should generate an alert". Grouping repeated breaches into one alert would reduce noise for coaches; see "Left out on purpose". |
+| A13 | A patient has one coach. If a patient has no coach, the alert is still stored and a warning is logged, but nobody is notified. Programs aren't modelled, because nothing in this scope depends on them. | The brief: "a care coach is assigned a panel of patients". An alert must never be dropped just because nobody is assigned. |
+| A14 | The care-plan system announces threshold changes with a `ThresholdsChanged` event carrying the patient's full new set of limits. This service updates its copy and then deletes the cached entry. | Thresholds belong to another system, so changes arrive as events, and the event is also the trigger for cache invalidation. |
+| A15 | The read APIs have no login in this exercise. In production, coaches log in through the identity provider (OAuth2/OIDC) and see only their own patients. | The brief asks for one authentication scheme and allows describing the rest; the device API key is the one implemented. |
 
 ## Sending readings
 
@@ -73,26 +74,38 @@ Whole-request errors use the standard JSON error format (RFC 9457):
 
 A reading is rejected if it is more than 30 days old or more than 5 minutes in the future.
 
-## Changing thresholds (admin)
+## Reading data
 
-`PUT /v1/admin/thresholds/defaults` or `PUT /v1/admin/thresholds/patients/{patientId}`, with the admin key in the `X-Admin-Key` header. The body is the full set of limits for that scope; anything not sent is removed. An empty set for a patient puts them back on the defaults. The defaults can't be empty.
+These have no login in this exercise (A15). Errors use the same format as above (`400` for a bad parameter).
 
-```json
-{"thresholds": [
-  {"metric": "SYSTOLIC", "severity": "CRITICAL", "below": 90, "above": 170},
-  {"metric": "SYSTOLIC", "severity": "WARNING", "below": 100, "above": 150}
-]}
-```
+| Endpoint | What it returns |
+|---|---|
+| `GET /v1/patients/{patientId}/readings/latest?limit=20` | the newest readings from the last 30 days, newest first (`limit` 1–100) |
+| `GET /v1/patients/{patientId}/readings?from=...&to=...&limit=100` | readings measured in `[from, to)`, newest first; at most 90 days per request (`limit` 1–500) |
+| `GET /v1/coaches/{coachId}/alerts?limit=50` | the coach's alerts, newest first (`limit` 1–200) |
 
-The response is `200` with the limits now in force. `400` means the limits are invalid (for example `below` not lower than `above`), and `401` means the admin key is missing or wrong.
+Each reading has `measuredAt` (the device's time) and `receivedAt` (when we got it); a big gap means the device uploaded late.
 
 ## Threshold cache
 
-Ingest needs a patient's limits for every request, so they are cached in Redis: one entry for the program defaults and one per patient for their own limits (often none). On a cache hit, ingest doesn't query PostgreSQL for thresholds at all.
+Ingest needs the patient's thresholds for every request, so they are cached in Redis, one entry per patient.
 
-- **Entries live 24 hours.** A device sends every 30 minutes to a few hours, so a short-lived entry would almost always have expired by the time it came back.
-- **A change can't leave an old limit in use.** The cached entry is deleted right after the change is committed, and again about a second later through the outbox, which retries until it succeeds even if the app crashes or Redis is down. The second delete also removes an old copy that a slow request may have written back. The 24-hour expiry is only the last safety net.
-- **Redis is optional at runtime.** If it is slow or down, ingest reads PostgreSQL instead and skips Redis for a few seconds, and the service stays healthy. Hits, misses and errors are counted in `thresholds.cache.lookups`.
+- **Cache-aside:** ingest reads Redis first; on a miss it reads PostgreSQL and stores a copy for 24 hours. A device sends every 30 minutes to a few hours, so a short-lived entry would almost always have expired by the time it came back.
+- **Invalidation:** when a `ThresholdsChanged` event arrives (A14), the service replaces its copy in PostgreSQL, then deletes the cached entry, and deletes it again a second later. The second delete removes an old copy that a request may have written back just after the first one. If Redis is down, the update is retried. The 24-hour expiry is only a safety net.
+- **Redis is optional at runtime:** if it is down, ingest reads PostgreSQL instead, and the service stays healthy.
+
+## Left out on purpose
+
+The brief asks for a credible core, not a complete platform. These would come next, with more time or at production scale; the design document explains each one.
+
+- **Login for coaches and staff** (OAuth2/OIDC), with each coach seeing only their own patients, and cover when a coach is away.
+- **Grouping alerts:** one open alert per patient and metric, updated by new breaches, with the coach notified only when it opens or gets worse, plus a history of every breach. About 150 alerts per coach per day would otherwise cause alert fatigue.
+- **Severity levels** (warning and critical), and acknowledging or resolving alerts.
+- **Default thresholds per program** for patients who have none of their own.
+- **A queue for alerts with no coach,** for operations staff to act on.
+- **Backpressure:** answering `503` with `Retry-After` when the database is overloaded.
+- **Metrics and alarms:** outbox lag, partitions ready ahead, cache hit rate, ingest results.
+- **Paging** through long time ranges.
 
 ## Scale assumptions
 

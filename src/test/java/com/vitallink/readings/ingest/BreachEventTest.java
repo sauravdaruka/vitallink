@@ -15,7 +15,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 
-/** Uses the seeded thresholds: program defaults, plus stricter systolic limits for patient-002. */
+/** Uses the seeded thresholds: patient-002 has a stricter systolic limit (170) than patient-001 (180). */
 @Import(TestcontainersConfiguration.class)
 @SpringBootTest
 class BreachEventTest {
@@ -47,8 +47,7 @@ class BreachEventTest {
         assertThat(events).hasSize(1);
         assertThat(events.getFirst())
                 .containsEntry("event_type", "ReadingBreached")
-                .containsEntry("severity", "CRITICAL")
-                .containsEntry("reason", "systolic 182 above 180 (CRITICAL)")
+                .containsEntry("reason", "systolic 182 above 180")
                 .containsEntry("patient_id", "patient-001");
     }
 
@@ -66,7 +65,7 @@ class BreachEventTest {
     void aPatientsOwnLimitsAreUsed() {
         UUID readingId = send(MEENA, 175, 90);
 
-        assertThat(eventsFor(readingId).getFirst()).containsEntry("reason", "systolic 175 above 170 (CRITICAL)");
+        assertThat(eventsFor(readingId).getFirst()).containsEntry("reason", "systolic 175 above 170");
     }
 
     private UUID send(AuthenticatedDevice device, int systolic, int diastolic) {
@@ -81,7 +80,7 @@ class BreachEventTest {
 
     private List<Map<String, Object>> eventsFor(UUID readingId) {
         return jdbc.queryForList("""
-                SELECT event_type, payload->>'severity' AS severity, payload->>'reason' AS reason,
+                SELECT event_type, payload->>'reason' AS reason,
                        payload->>'patientId' AS patient_id
                 FROM outbox
                 WHERE payload->>'readingId' = ?

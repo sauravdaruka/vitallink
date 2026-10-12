@@ -1,13 +1,10 @@
 package com.vitallink.readings.outbox;
 
-import io.micrometer.core.instrument.Gauge;
-import io.micrometer.core.instrument.MeterRegistry;
 import java.nio.charset.StandardCharsets;
 import java.sql.Array;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicLong;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.amqp.core.Message;
@@ -40,8 +37,6 @@ class OutboxRelay {
     private final RabbitTemplate rabbit;
     private final int batchSize;
     private final long confirmTimeoutMillis;
-    private final AtomicLong pending = new AtomicLong();
-    private final AtomicLong oldestPendingSeconds = new AtomicLong();
     // Logged once when sending starts failing and once when it recovers, not every 200 ms during an outage.
     private final AtomicBoolean failing = new AtomicBoolean();
 
@@ -49,7 +44,6 @@ class OutboxRelay {
             JdbcTemplate jdbc,
             TransactionTemplate transactions,
             RabbitTemplate rabbit,
-            MeterRegistry meters,
             @Value("${outbox.relay.batch-size}") int batchSize,
             @Value("${outbox.relay.confirm-timeout-millis}") long confirmTimeoutMillis) {
         this.jdbc = jdbc;
@@ -57,12 +51,6 @@ class OutboxRelay {
         this.rabbit = rabbit;
         this.batchSize = batchSize;
         this.confirmTimeoutMillis = confirmTimeoutMillis;
-        Gauge.builder("outbox.pending", pending, AtomicLong::get)
-                .description("Events not yet sent to the broker. Should stay near 0.")
-                .register(meters);
-        Gauge.builder("outbox.oldest.pending.seconds", oldestPendingSeconds, AtomicLong::get)
-                .description("Age of the oldest unsent event: how far behind alerting is.")
-                .register(meters);
     }
 
     @Scheduled(fixedDelayString = "${outbox.relay.interval}")
@@ -80,7 +68,6 @@ class OutboxRelay {
                 log.warn("Could not send outbox events; they stay in the outbox and will be retried", e);
             }
         }
-        updateMetrics();
     }
 
     /**
@@ -141,22 +128,6 @@ class OutboxRelay {
             log.debug("Removed {} old outbox events", removed);
         } catch (RuntimeException e) {
             log.warn("Could not remove old outbox events", e);
-        }
-    }
-
-    private void updateMetrics() {
-        try {
-            jdbc.query("""
-                    SELECT count(*) AS pending,
-                           coalesce(extract(epoch FROM now() - min(created_at)), 0)::bigint AS oldest
-                    FROM outbox
-                    WHERE sent_at IS NULL
-                    """, row -> {
-                pending.set(row.getLong("pending"));
-                oldestPendingSeconds.set(row.getLong("oldest"));
-            });
-        } catch (RuntimeException e) {
-            log.warn("Could not update outbox metrics", e);
         }
     }
 }

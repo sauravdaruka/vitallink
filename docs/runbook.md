@@ -21,9 +21,9 @@ How to start, check, stop and fix the service on a laptop. This grows as more pa
 
 2. Start the service:
    ```
-   ADMIN_API_KEY=local-admin-key ./mvnw spring-boot:run
+   ./mvnw spring-boot:run
    ```
-   Database migrations (Flyway) run automatically at startup. `ADMIN_API_KEY` is only needed to change thresholds (see below); without it the service runs normally and the admin API rejects every request.
+   Database migrations (Flyway) run automatically at startup.
 
 ## Check it's working
 
@@ -91,46 +91,49 @@ Within a second:
 
 | Check | Command | Expected |
 |---|---|---|
-| The alert | `docker compose exec postgres psql -U vitallink -d vitallink -c 'select id, patient_id, severity, status, assigned_coach_id, breach_count from alerts'` | one `CRITICAL` alert for `coach-asha` |
-| Its history | `... -c 'select alert_id, measured_at, severity, reason from alert_breaches'` | one row per high reading |
-| The coach was notified | `... -c 'select alert_id, coach_id, kind, severity from notifications'` | `OPENED` |
-| Nothing stuck in the outbox | `curl -s localhost:8080/actuator/metrics/outbox.pending` | `0` |
-| Queues | RabbitMQ UI at http://localhost:15672 (user and password `vitallink`) | `alerting.reading-breached` empty, `alerting.reading-breached.dead` empty |
+| The alert | `docker compose exec postgres psql -U vitallink -d vitallink -c 'select id, patient_id, reason, coach_id from alerts'` | one alert for `coach-asha`, with the limit that was broken |
+| The coach was notified | `docker compose exec postgres psql -U vitallink -d vitallink -c 'select alert_id, coach_id, created_at from notifications'` | one row for `coach-asha` |
+| Nothing stuck in the outbox | `docker compose exec postgres psql -U vitallink -d vitallink -c 'select count(*) from outbox where sent_at is null'` | `0` |
+| Queues | RabbitMQ UI at http://localhost:15672 (user and password `vitallink`) | `alerting.reading-breached` and `alerting.reading-breached.dead` empty |
 
-Send more high readings: the same alert's `breach_count` goes up, and a new notification appears only if the severity gets worse.
+Every high reading raises its own alert and notification. A reading for `patient-003` (key `local-key-bp-003`) raises an alert with no coach: it is stored, nobody is notified, and the log says so.
+
+## Read readings and alerts
+
+The read APIs have no login in this exercise (README A15). Demo data: `coach-asha` looks after `patient-001`, `coach-ben` looks after `patient-002`, and `patient-003` has no coach.
+
+| Check | Command | Expected |
+|---|---|---|
+| Latest readings | `curl -s localhost:8080/v1/patients/patient-001/readings/latest` | readings, newest first |
+| A time range | `curl -s "localhost:8080/v1/patients/patient-001/readings?from=$(date -u -v-1d +%Y-%m-%dT%H:%M:%SZ)&to=$(date -u +%Y-%m-%dT%H:%M:%SZ)"` | readings from the last day |
+| An invalid range | the same with `from` after `to` | `400` |
+| A coach's alerts | `curl -s localhost:8080/v1/coaches/coach-asha/alerts` | Asha's alerts, newest first |
+
+(`date -v-1d` is the macOS form; on Linux use `date -u -d '1 day ago' +%Y-%m-%dT%H:%M:%SZ`.)
 
 ## Change a threshold and see the cache follow
 
-Thresholds are cached in Redis for 24 hours, so a change must go through the admin API, which deletes the cached copy (README A14). This needs the service started with `ADMIN_API_KEY=local-admin-key`.
+Thresholds belong to the care-plan system, which announces changes with a `ThresholdsChanged` event (README A14). Here we play that system by publishing the event through the RabbitMQ management API.
 
-1. Send a reading of 150/90 for `patient-001`. It is under the default limit (warning above 160), so no alert:
+1. Send a reading of 150/90 for `patient-001`. It is under the limit (180), so no alert:
    ```bash
    send() { curl -s -X POST localhost:8080/v1/readings -H 'X-Device-Key: local-key-bp-001' \
      -H 'Content-Type: application/json' \
      -d "{\"readings\": [{\"readingId\": \"$(uuidgen)\", \"metricType\": \"BLOOD_PRESSURE\", \"systolic\": $1, \"diastolic\": 90, \"measuredAt\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}]}"; echo; }
    send 150
    ```
-2. The limits are now cached. `docker compose exec redis redis-cli keys 'thresholds:*'` shows `thresholds:v1:defaults` and `thresholds:v1:patient:patient-001`.
-3. Give `patient-001` a stricter systolic limit:
+2. The patient's limits are now cached: `docker compose exec redis redis-cli get thresholds:patient:patient-001`.
+3. Lower the systolic limit to 140:
    ```bash
-   curl -s -X PUT localhost:8080/v1/admin/thresholds/patients/patient-001 -H 'X-Admin-Key: local-admin-key' \
-     -H 'Content-Type: application/json' \
-     -d '{"thresholds": [{"metric": "SYSTOLIC", "severity": "WARNING", "above": 140}]}'
+   curl -s -u vitallink:vitallink -H 'Content-Type: application/json' \
+     -X POST localhost:15672/api/exchanges/%2F/careplan.events/publish -d '{
+       "routing_key": "ThresholdsChanged", "properties": {"content_type": "application/json"},
+       "payload_encoding": "string",
+       "payload": "{\"patientId\":\"patient-001\",\"thresholds\":[{\"metric\":\"SYSTOLIC\",\"below\":90,\"above\":140},{\"metric\":\"DIASTOLIC\",\"below\":50,\"above\":110},{\"metric\":\"PULSE\",\"below\":40,\"above\":130}]}"}'
    ```
-   Expected: `200` with the new limit. The patient's cache entry is gone (`redis-cli keys 'thresholds:*'` no longer lists it).
-4. Send 150/90 again: `send 150`. This time it breaks the new limit, and a `WARNING` alert appears (see the checks in "See an alert being raised").
-5. Put `patient-001` back on the defaults:
-   ```bash
-   curl -s -X PUT localhost:8080/v1/admin/thresholds/patients/patient-001 -H 'X-Admin-Key: local-admin-key' \
-     -H 'Content-Type: application/json' -d '{"thresholds": []}'
-   ```
-
-| Check | Command | Expected |
-|---|---|---|
-| Cache hits, misses and errors | `curl -s 'localhost:8080/actuator/metrics/thresholds.cache.lookups?tag=result:hit'` (or `miss`, `error`) | mostly hits once warm |
-| What is cached for a patient | `docker compose exec redis redis-cli get thresholds:v1:patient:patient-001` | `[]` means "no limits of their own" |
-| How long until it expires | `docker compose exec redis redis-cli ttl thresholds:v1:patient:patient-001` | up to 86400 seconds |
-| No admin key | `curl -i -X PUT localhost:8080/v1/admin/thresholds/defaults -H 'Content-Type: application/json' -d '{"thresholds": []}'` | `401` |
+   Expected: `{"routed":true}`. Within a second the cached entry is gone (`redis-cli get ...` returns nothing) and `select * from thresholds where patient_id = 'patient-001'` shows 140.
+4. Send 150/90 again: `send 150`. This time it breaks the new limit and an alert appears ("systolic 150 above 140").
+5. Put the limit back to 180 by publishing the same event with `"above":180`.
 
 **Redis down:** `docker compose stop redis`, then `send 150`. The reading is still `ACCEPTED`; thresholds come from PostgreSQL and the service log says "Threshold cache unavailable" once. `docker compose start redis` and the log says "Threshold cache works again".
 
@@ -177,10 +180,9 @@ Every setting has a local default, so nothing needs to be set to run locally. To
 | Tests fail with `Could not find a valid Docker environment` | Docker isn't running | start Docker and re-run |
 | Startup fails with `Migration checksum mismatch` | a migration file that already ran was edited | never edit an applied migration; add a new one. Locally, `docker compose down -v` resets the database |
 | A request with a valid key gets `401` | the seed data didn't load, or the key was typed with extra spaces | check `select * from devices` in psql; seed data loads only when `FLYWAY_LOCATIONS` includes `classpath:db/seed` (the default) |
-| Alerts aren't appearing | RabbitMQ isn't running, or events are stuck in the outbox | `docker compose ps`; check `outbox.pending` and `outbox.oldest.pending.seconds` in actuator metrics; look for "Could not send outbox events" in the service log |
+| Alerts aren't appearing | RabbitMQ isn't running, or events are stuck in the outbox | `docker compose ps`; check `select count(*) from outbox where sent_at is null`; look for "Could not send outbox events" in the service log |
 | Messages in `alerting.reading-breached.dead` | an alert job failed every retry | read the message in the RabbitMQ UI and the service log, fix the cause, then move it back to the main queue |
-| A threshold change has no effect | it was made directly in the database, so the cached copy (up to 24 hours old) is still used | make changes through the admin API. To clear the cache by hand: `docker compose exec redis redis-cli del thresholds:v1:defaults` (or the patient's key) |
-| Admin API returns `401` with the right key | the service was started without `ADMIN_API_KEY`, or with a different value | restart it with `ADMIN_API_KEY=...`; the startup log warns when it is not set |
+| A threshold change has no effect | it was made directly in the database, so the cached copy (up to 24 hours old) is still used | publish a `ThresholdsChanged` event as shown above, or delete the entry by hand: `docker compose exec redis redis-cli del thresholds:patient:<patientId>` |
 | Log says "Threshold cache unavailable" | Redis is down or slow | `docker compose ps` and `docker compose start redis`. Ingest keeps working from PostgreSQL meanwhile |
-| Messages in `thresholds.cache-invalidation.dead` | a cache delete failed every retry (Redis down for a long time) | once Redis is back, delete the key named in the message by hand (or move the message back to the main queue) |
+| Messages in `readings.thresholds-changed.dead` | a threshold update failed every retry (for example Redis down for a long time, or a bad event) | read the message in the RabbitMQ UI and the service log, fix the cause, then move it back to the main queue |
 | Build fails at `spotless:check` | code isn't formatted | `./mvnw spotless:apply` |

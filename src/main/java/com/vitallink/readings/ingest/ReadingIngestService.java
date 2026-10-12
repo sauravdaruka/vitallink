@@ -1,19 +1,14 @@
 package com.vitallink.readings.ingest;
 
 import com.vitallink.readings.device.AuthenticatedDevice;
-import com.vitallink.readings.ingest.ReadingResult.Status;
 import com.vitallink.readings.outbox.Outbox;
 import com.vitallink.readings.threshold.Threshold;
 import com.vitallink.readings.threshold.ThresholdEvaluator;
 import com.vitallink.readings.threshold.Thresholds;
-import io.micrometer.core.instrument.Counter;
-import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.EnumMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -41,8 +36,6 @@ class ReadingIngestService {
     private final Clock clock;
     private final ReadingValidator validator;
     private final int maxBatchSize;
-    private final Map<Status, Counter> resultCounters = new EnumMap<>(Status.class);
-    private final Counter patientMismatches;
 
     ReadingIngestService(
             ReadingWriter writer,
@@ -50,7 +43,6 @@ class ReadingIngestService {
             Outbox outbox,
             TransactionTemplate transactions,
             Clock clock,
-            MeterRegistry meters,
             // The oldest reading we accept matches the partitions we keep ready, so the two can't drift apart.
             @Value("${readings.partitions.days-back}") int daysBack,
             @Value("${readings.ingest.max-clock-skew}") Duration maxClockSkew,
@@ -62,22 +54,11 @@ class ReadingIngestService {
         this.clock = clock;
         this.validator = new ReadingValidator(Duration.ofDays(daysBack), maxClockSkew);
         this.maxBatchSize = maxBatchSize;
-        for (Status status : Status.values()) {
-            resultCounters.put(
-                    status,
-                    Counter.builder("readings.ingest.results")
-                            .tag("status", status.name())
-                            .register(meters));
-        }
-        this.patientMismatches = Counter.builder("readings.ingest.patient.mismatch")
-                .description("Requests whose patientId did not match the device's patient")
-                .register(meters);
     }
 
     List<ReadingResult> ingest(AuthenticatedDevice device, IngestRequest request) {
         // Permission first: a device that isn't allowed learns nothing about whether its request was valid.
         if (request.patientId() != null && !request.patientId().equals(device.patientId())) {
-            patientMismatches.increment();
             // Only the device ID is logged: patient IDs are health data.
             log.warn("Device {} sent readings for a patient it is not assigned to", device.deviceId());
             throw problem(HttpStatus.FORBIDDEN, "this device is not assigned to that patient");
@@ -111,8 +92,6 @@ class ReadingIngestService {
         positionOfNewReading.forEach((readingId, i) -> results[i] =
                 stored.contains(readingId) ? ReadingResult.accepted(readingId) : ReadingResult.duplicate(readingId));
 
-        Arrays.stream(results)
-                .forEach(result -> resultCounters.get(result.status()).increment());
         return List.of(results);
     }
 
@@ -130,7 +109,7 @@ class ReadingIngestService {
                     continue;
                 }
                 ThresholdEvaluator.evaluate(reading.systolic(), reading.diastolic(), reading.pulse(), limits)
-                        .ifPresent(breach -> {
+                        .ifPresent(reason -> {
                             UUID eventId = UUID.randomUUID();
                             outbox.add(
                                     eventId,
@@ -145,8 +124,7 @@ class ReadingIngestService {
                                             reading.systolic(),
                                             reading.diastolic(),
                                             reading.pulse(),
-                                            breach.severity(),
-                                            breach.reason()));
+                                            reason));
                         });
             }
             return stored;
