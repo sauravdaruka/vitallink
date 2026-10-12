@@ -9,8 +9,8 @@ import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
 
 /**
- * Reads a patient's readings. Every query is bounded by time on both sides, so PostgreSQL only opens the daily
- * partitions in that range, and uses the {@code (patient_id, measured_at)} index inside them.
+ * Reads a patient's readings. Every query has a lower time bound, so PostgreSQL skips the older daily partitions,
+ * and uses the {@code (patient_id, measured_at)} index inside the rest.
  */
 @Repository
 class ReadingQueries {
@@ -29,6 +29,17 @@ class ReadingQueries {
 
     ReadingQueries(JdbcTemplate jdbc) {
         this.jdbc = jdbc;
+    }
+
+    /** Readings measured since the given time, newest first. */
+    List<ReadingView> since(String patientId, Instant from, int limit) {
+        return jdbc.query("""
+                SELECT device_id, reading_id, metric_type, systolic, diastolic, pulse, measured_at, received_at
+                FROM readings
+                WHERE patient_id = ? AND measured_at >= ?
+                ORDER BY measured_at DESC
+                LIMIT ?
+                """, TO_VIEW, patientId, Timestamp.from(from), limit);
     }
 
     /** Readings measured in [from, to), newest first. */

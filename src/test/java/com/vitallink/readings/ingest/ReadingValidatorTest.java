@@ -11,7 +11,7 @@ class ReadingValidatorTest {
 
     private static final Instant NOW = Instant.parse("2026-10-12T07:00:00Z");
 
-    private final ReadingValidator validator = new ReadingValidator(Duration.ofDays(30), Duration.ofMinutes(5));
+    private final ReadingValidator validator = new ReadingValidator(Duration.ofDays(30));
 
     @Test
     void aNormalReadingIsValid() {
@@ -64,18 +64,6 @@ class ReadingValidatorTest {
     void readingsOlderThanThirtyDaysAreRejected() {
         assertThat(validator.problemWith(reading(120, 80, 72, NOW.minus(Duration.ofDays(31))), NOW))
                 .contains("measuredAt is more than 30 days old");
-    }
-
-    @Test
-    void aDeviceClockSlightlyAheadIsTolerated() {
-        assertThat(validator.problemWith(reading(120, 80, 72, NOW.plus(Duration.ofMinutes(4))), NOW))
-                .isEmpty();
-    }
-
-    @Test
-    void readingsTooFarInTheFutureAreRejected() {
-        assertThat(validator.problemWith(reading(120, 80, 72, NOW.plus(Duration.ofMinutes(6))), NOW))
-                .contains("measuredAt is in the future; check the device clock");
     }
 
     private static ReadingInput reading(int systolic, int diastolic, Integer pulse, Instant measuredAt) {

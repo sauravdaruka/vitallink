@@ -60,8 +60,6 @@ readings:
   ingest:
     # Bigger batches get 413, so one request can't hold a database connection for long.
     max-batch-size: 500
-    # How far ahead of our clock a reading's measuredAt may be. Device clocks drift a little.
-    max-clock-skew: 5m
 
 outbox:
   relay:

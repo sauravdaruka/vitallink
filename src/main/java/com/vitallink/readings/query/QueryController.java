@@ -22,28 +22,23 @@ class QueryController {
     private final AlertQueries alerts;
     private final Clock clock;
     private final Duration latestWindow;
-    private final Duration maxClockSkew;
 
     QueryController(
             ReadingQueries readings,
             AlertQueries alerts,
             Clock clock,
-            // "Latest" looks only as far back and ahead as ingest accepts readings, so it opens only those daily
-            // partitions instead of every partition we keep.
-            @Value("${readings.partitions.days-back}") int daysBack,
-            @Value("${readings.ingest.max-clock-skew}") Duration maxClockSkew) {
+            // "Latest" looks only as far back as ingest accepts readings, so it skips the older daily partitions.
+            @Value("${readings.partitions.days-back}") int daysBack) {
         this.readings = readings;
         this.alerts = alerts;
         this.clock = clock;
         this.latestWindow = Duration.ofDays(daysBack);
-        this.maxClockSkew = maxClockSkew;
     }
 
     @GetMapping("/v1/patients/{patientId}/readings/latest")
     ReadingList latest(@PathVariable String patientId, @RequestParam(defaultValue = "20") int limit) {
         requireBetween("limit", limit, 1, 100);
-        Instant now = clock.instant();
-        return new ReadingList(readings.between(patientId, now.minus(latestWindow), now.plus(maxClockSkew), limit));
+        return new ReadingList(readings.since(patientId, clock.instant().minus(latestWindow), limit));
     }
 
     @GetMapping("/v1/patients/{patientId}/readings")

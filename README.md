@@ -42,6 +42,7 @@ The brief leaves some things open. These are the assumptions I made, and the rea
 | A13 | A patient has one coach. If a patient has no coach, the alert is still stored and a warning is logged, but nobody is notified. Programs aren't modelled, because nothing in this scope depends on them. | The brief: "a care coach is assigned a panel of patients". An alert must never be dropped just because nobody is assigned. |
 | A14 | The care-plan system announces threshold changes with a `ThresholdsChanged` event carrying the patient's full new set of limits. This service updates its copy and then deletes the cached entry. | Thresholds belong to another system, so changes arrive as events, and the event is also the trigger for cache invalidation. |
 | A15 | The read APIs have no login in this exercise. In production, coaches log in through the identity provider (OAuth2/OIDC) and see only their own patients. | The brief asks for one authentication scheme and allows describing the rest; the device API key is the one implemented. |
+| A16 | Readings are medical records and must be kept for years; I assume 7 years, as many medical-record rules require. Coaches work with recent data, so production keeps the last 6 months in PostgreSQL and moves older readings to cheap object storage, where they can still be queried. | The real period depends on regulations and contracts that aren't in the brief. 6 months keeps the database at about 1.8 TB while covering every coach screen (the read APIs allow at most 90 days per request). |
 
 ## Sending readings
 
@@ -79,7 +80,7 @@ Whole-request errors use the standard JSON error format (RFC 9457):
 | `413` | more than 500 readings |
 | `503` + `Retry-After` | the database is overloaded; retry after a short, random delay |
 
-A reading is rejected if it is more than 30 days old or more than 5 minutes in the future.
+A reading is rejected if it is more than 30 days old.
 
 ## Reading data
 

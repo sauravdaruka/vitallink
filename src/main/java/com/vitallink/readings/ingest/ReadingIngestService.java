@@ -45,14 +45,13 @@ class ReadingIngestService {
             Clock clock,
             // The oldest reading we accept matches the partitions we keep ready, so the two can't drift apart.
             @Value("${readings.partitions.days-back}") int daysBack,
-            @Value("${readings.ingest.max-clock-skew}") Duration maxClockSkew,
             @Value("${readings.ingest.max-batch-size}") int maxBatchSize) {
         this.writer = writer;
         this.thresholds = thresholds;
         this.outbox = outbox;
         this.transactions = transactions;
         this.clock = clock;
-        this.validator = new ReadingValidator(Duration.ofDays(daysBack), maxClockSkew);
+        this.validator = new ReadingValidator(Duration.ofDays(daysBack));
         this.maxBatchSize = maxBatchSize;
     }
 

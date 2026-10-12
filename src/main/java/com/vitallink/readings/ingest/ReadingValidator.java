@@ -13,11 +13,9 @@ import java.util.Optional;
 final class ReadingValidator {
 
     private final Duration maxAge;
-    private final Duration maxClockSkew;
 
-    ReadingValidator(Duration maxAge, Duration maxClockSkew) {
+    ReadingValidator(Duration maxAge) {
         this.maxAge = maxAge;
-        this.maxClockSkew = maxClockSkew;
     }
 
     /** Why the reading can't be stored, or empty if it's valid. */
@@ -48,9 +46,6 @@ final class ReadingValidator {
         }
         if (reading.measuredAt().isBefore(now.minus(maxAge))) {
             return Optional.of("measuredAt is more than %d days old".formatted(maxAge.toDays()));
-        }
-        if (reading.measuredAt().isAfter(now.plus(maxClockSkew))) {
-            return Optional.of("measuredAt is in the future; check the device clock");
         }
         return Optional.empty();
     }
