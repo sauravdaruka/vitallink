@@ -1,6 +1,6 @@
 # Local runbook
 
-How to start, check, stop and fix the service on a laptop. This grows as more parts are added (message broker, cache, load test).
+How to start, check, stop and fix the service on a laptop. This grows as more parts are added (load test next).
 
 ## What you need
 - Docker (running)
@@ -9,7 +9,7 @@ How to start, check, stop and fix the service on a laptop. This grows as more pa
 
 ## Start
 
-1. Start the database:
+1. Start PostgreSQL, RabbitMQ and Redis:
    ```
    docker compose up -d
    ```
@@ -17,13 +17,13 @@ How to start, check, stop and fix the service on a laptop. This grows as more pa
    ```
    docker compose ps
    ```
-   The `postgres` and `rabbitmq` services should both show `(healthy)`.
+   The `postgres`, `rabbitmq` and `redis` services should all show `(healthy)`.
 
 2. Start the service:
    ```
-   ./mvnw spring-boot:run
+   ADMIN_API_KEY=local-admin-key ./mvnw spring-boot:run
    ```
-   Database migrations (Flyway) run automatically at startup.
+   Database migrations (Flyway) run automatically at startup. `ADMIN_API_KEY` is only needed to change thresholds (see below); without it the service runs normally and the admin API rejects every request.
 
 ## Check it's working
 
@@ -33,6 +33,7 @@ How to start, check, stop and fix the service on a laptop. This grows as more pa
 | Connection pool size | `curl localhost:8080/actuator/metrics/hikaricp.connections.max` | `10` |
 | Threads waiting for a DB connection | `curl localhost:8080/actuator/metrics/hikaricp.connections.pending` | `0` when idle |
 | Database is reachable | `docker compose exec postgres psql -U vitallink -d vitallink -c 'select 1'` | `1` |
+| Redis is reachable | `docker compose exec redis redis-cli ping` | `PONG` |
 | Migrations that have run | `docker compose exec postgres psql -U vitallink -d vitallink -c 'select version, description, success from flyway_schema_history'` | one row per migration |
 
 ## Demo devices and keys
@@ -98,6 +99,41 @@ Within a second:
 
 Send more high readings: the same alert's `breach_count` goes up, and a new notification appears only if the severity gets worse.
 
+## Change a threshold and see the cache follow
+
+Thresholds are cached in Redis for 24 hours, so a change must go through the admin API, which deletes the cached copy (README A14). This needs the service started with `ADMIN_API_KEY=local-admin-key`.
+
+1. Send a reading of 150/90 for `patient-001`. It is under the default limit (warning above 160), so no alert:
+   ```bash
+   send() { curl -s -X POST localhost:8080/v1/readings -H 'X-Device-Key: local-key-bp-001' \
+     -H 'Content-Type: application/json' \
+     -d "{\"readings\": [{\"readingId\": \"$(uuidgen)\", \"metricType\": \"BLOOD_PRESSURE\", \"systolic\": $1, \"diastolic\": 90, \"measuredAt\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}]}"; echo; }
+   send 150
+   ```
+2. The limits are now cached. `docker compose exec redis redis-cli keys 'thresholds:*'` shows `thresholds:v1:defaults` and `thresholds:v1:patient:patient-001`.
+3. Give `patient-001` a stricter systolic limit:
+   ```bash
+   curl -s -X PUT localhost:8080/v1/admin/thresholds/patients/patient-001 -H 'X-Admin-Key: local-admin-key' \
+     -H 'Content-Type: application/json' \
+     -d '{"thresholds": [{"metric": "SYSTOLIC", "severity": "WARNING", "above": 140}]}'
+   ```
+   Expected: `200` with the new limit. The patient's cache entry is gone (`redis-cli keys 'thresholds:*'` no longer lists it).
+4. Send 150/90 again: `send 150`. This time it breaks the new limit, and a `WARNING` alert appears (see the checks in "See an alert being raised").
+5. Put `patient-001` back on the defaults:
+   ```bash
+   curl -s -X PUT localhost:8080/v1/admin/thresholds/patients/patient-001 -H 'X-Admin-Key: local-admin-key' \
+     -H 'Content-Type: application/json' -d '{"thresholds": []}'
+   ```
+
+| Check | Command | Expected |
+|---|---|---|
+| Cache hits, misses and errors | `curl -s 'localhost:8080/actuator/metrics/thresholds.cache.lookups?tag=result:hit'` (or `miss`, `error`) | mostly hits once warm |
+| What is cached for a patient | `docker compose exec redis redis-cli get thresholds:v1:patient:patient-001` | `[]` means "no limits of their own" |
+| How long until it expires | `docker compose exec redis redis-cli ttl thresholds:v1:patient:patient-001` | up to 86400 seconds |
+| No admin key | `curl -i -X PUT localhost:8080/v1/admin/thresholds/defaults -H 'Content-Type: application/json' -d '{"thresholds": []}'` | `401` |
+
+**Redis down:** `docker compose stop redis`, then `send 150`. The reading is still `ACCEPTED`; thresholds come from PostgreSQL and the service log says "Threshold cache unavailable" once. `docker compose start redis` and the log says "Threshold cache works again".
+
 ## Build and test
 
 | Task | Command |
@@ -114,7 +150,7 @@ Tests start their own PostgreSQL in Docker (Testcontainers), so Docker must be r
 |---|---|---|
 | Stop the service | `Ctrl+C` in its terminal | – |
 | Stop the database | `docker compose stop` | kept |
-| Remove the containers | `docker compose down` | kept (in a Docker volume) |
+| Remove the containers | `docker compose down` | kept (in a Docker volume); the Redis cache is emptied, which is harmless |
 | Start from an empty database | `docker compose down -v` | **deleted** |
 
 ## Configuration
@@ -143,4 +179,8 @@ Every setting has a local default, so nothing needs to be set to run locally. To
 | A request with a valid key gets `401` | the seed data didn't load, or the key was typed with extra spaces | check `select * from devices` in psql; seed data loads only when `FLYWAY_LOCATIONS` includes `classpath:db/seed` (the default) |
 | Alerts aren't appearing | RabbitMQ isn't running, or events are stuck in the outbox | `docker compose ps`; check `outbox.pending` and `outbox.oldest.pending.seconds` in actuator metrics; look for "Could not send outbox events" in the service log |
 | Messages in `alerting.reading-breached.dead` | an alert job failed every retry | read the message in the RabbitMQ UI and the service log, fix the cause, then move it back to the main queue |
+| A threshold change has no effect | it was made directly in the database, so the cached copy (up to 24 hours old) is still used | make changes through the admin API. To clear the cache by hand: `docker compose exec redis redis-cli del thresholds:v1:defaults` (or the patient's key) |
+| Admin API returns `401` with the right key | the service was started without `ADMIN_API_KEY`, or with a different value | restart it with `ADMIN_API_KEY=...`; the startup log warns when it is not set |
+| Log says "Threshold cache unavailable" | Redis is down or slow | `docker compose ps` and `docker compose start redis`. Ingest keeps working from PostgreSQL meanwhile |
+| Messages in `thresholds.cache-invalidation.dead` | a cache delete failed every retry (Redis down for a long time) | once Redis is back, delete the key named in the message by hand (or move the message back to the main queue) |
 | Build fails at `spotless:check` | code isn't formatted | `./mvnw spotless:apply` |

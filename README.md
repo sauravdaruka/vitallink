@@ -33,6 +33,7 @@ The brief leaves some things open. These are the assumptions I made, and the rea
 | A11 | A patient without their own thresholds uses program-wide defaults. A patient's own limits for a metric replace the defaults for that metric only. If several limits are broken, the most severe one sets the alert's severity. | Without defaults, a patient missing from the threshold data would never get an alert. That is a silent safety gap. |
 | A12 | A patient has at most one open alert per metric. New high readings update that alert instead of creating new ones, and every reading stays in its history. The coach is notified only when an alert is first opened and when it becomes more severe, so they aren't flooded with repeats. | About 150 alerts per coach per day would make coaches start ignoring them. One alert per problem, plus a full history of every breach, keeps the coach focused without losing how the condition developed (a gradual rise or a sudden spike). |
 | A13 | A patient has one coach per program, and an alert goes to the coach of the program it belongs to (blood pressure → hypertension coach). If there is no coach, the alert waits in an unassigned queue. | A diabetes coach shouldn't be interrupted by a blood pressure alert. An alert must never be dropped just because nobody is assigned. |
+| A14 | Thresholds are changed through a small admin API protected by one admin key (`ADMIN_API_KEY`). Each call replaces the full set of limits for the program defaults or for one patient. In production this would be staff single sign-on, with each change recorded against the person who made it. | The brief doesn't say how thresholds change, but the cache needs one place where changes happen so it can delete its old copy. A change made straight in the database would not reach the cache until the copy expires. |
 
 ## Sending readings
 
@@ -71,6 +72,27 @@ Whole-request errors use the standard JSON error format (RFC 9457):
 | `503` + `Retry-After` | the database is overloaded; retry after a short, random delay |
 
 A reading is rejected if it is more than 30 days old or more than 5 minutes in the future.
+
+## Changing thresholds (admin)
+
+`PUT /v1/admin/thresholds/defaults` or `PUT /v1/admin/thresholds/patients/{patientId}`, with the admin key in the `X-Admin-Key` header. The body is the full set of limits for that scope; anything not sent is removed. An empty set for a patient puts them back on the defaults. The defaults can't be empty.
+
+```json
+{"thresholds": [
+  {"metric": "SYSTOLIC", "severity": "CRITICAL", "below": 90, "above": 170},
+  {"metric": "SYSTOLIC", "severity": "WARNING", "below": 100, "above": 150}
+]}
+```
+
+The response is `200` with the limits now in force. `400` means the limits are invalid (for example `below` not lower than `above`), and `401` means the admin key is missing or wrong.
+
+## Threshold cache
+
+Ingest needs a patient's limits for every request, so they are cached in Redis: one entry for the program defaults and one per patient for their own limits (often none). On a cache hit, ingest doesn't query PostgreSQL for thresholds at all.
+
+- **Entries live 24 hours.** A device sends every 30 minutes to a few hours, so a short-lived entry would almost always have expired by the time it came back.
+- **A change can't leave an old limit in use.** The cached entry is deleted right after the change is committed, and again about a second later through the outbox, which retries until it succeeds even if the app crashes or Redis is down. The second delete also removes an old copy that a slow request may have written back. The 24-hour expiry is only the last safety net.
+- **Redis is optional at runtime.** If it is slow or down, ingest reads PostgreSQL instead and skips Redis for a few seconds, and the service stays healthy. Hits, misses and errors are counted in `thresholds.cache.lookups`.
 
 ## Scale assumptions
 

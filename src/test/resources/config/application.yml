@@ -7,3 +7,9 @@ test:
   rabbitmq:
     # Keep in sync with the image in docker-compose.yml.
     image: rabbitmq:4.3-management
+  redis:
+    # Keep in sync with the image in docker-compose.yml.
+    image: redis:8.10
+
+admin:
+  api-key: test-admin-key

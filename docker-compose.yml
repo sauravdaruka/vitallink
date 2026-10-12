@@ -34,6 +34,20 @@ services:
       timeout: 5s
       retries: 20
 
+  redis:
+    # Keep in sync with test.redis.image in src/test/resources/config/application.yml.
+    image: redis:8.10
+    # Used only as a cache: nothing is written to disk, and when memory is full the least recently used
+    # entries are dropped (they are reloaded from PostgreSQL when needed).
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
 volumes:
   postgres-data:
   rabbitmq-data:
