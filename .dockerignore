@@ -1,0 +1,9 @@
+# Only what the build needs goes into the Docker build context.
+target/
+.git/
+.idea/
+*.iml
+.vscode/
+.env
+docs/
+loadtest/results/

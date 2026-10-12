@@ -1,4 +1,27 @@
 services:
+  app:
+    # Built from the Dockerfile; `docker compose up --build` rebuilds it after code changes.
+    build: .
+    environment:
+      # Inside Docker the other services are reached by their service names, not localhost.
+      DB_URL: jdbc:postgresql://postgres:5432/${DB_NAME:-vitallink}
+      DB_USER: ${DB_USER:-vitallink}
+      DB_PASSWORD: ${DB_PASSWORD:-vitallink}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_USER: ${RABBITMQ_USER:-vitallink}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-vitallink}
+      REDIS_HOST: redis
+    ports:
+      - "8080:8080"
+    # Starts only once its dependencies accept connections, so startup (migrations, queues) doesn't fail.
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
   postgres:
     # Keep in sync with test.postgres.image in src/test/resources/config/application.yml.
     image: postgres:18

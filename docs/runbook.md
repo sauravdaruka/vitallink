@@ -3,27 +3,25 @@
 How to start, check, stop and fix the service on a laptop. This grows as more parts are added (load test next).
 
 ## What you need
-- Docker (running)
-- Java 25
-- Nothing else: Maven comes with the project (`./mvnw`).
+- Docker (running). That's all to run the service.
+- Java 25, only to build, test or run the service outside Docker. Maven comes with the project (`./mvnw`).
 
 ## Start
 
-1. Start PostgreSQL, RabbitMQ and Redis:
-   ```
-   docker compose up -d
-   ```
-   Wait until it is healthy:
-   ```
-   docker compose ps
-   ```
-   The `postgres`, `rabbitmq` and `redis` services should all show `(healthy)`.
+**Everything in Docker (one command):**
+```
+docker compose up --build -d
+```
+This builds the service image (the first build downloads dependencies and takes a few minutes), starts PostgreSQL, RabbitMQ and Redis, and starts the service once they are healthy. Database migrations (Flyway) and demo data load at startup. Check with `docker compose ps` (the three dependencies show `(healthy)`) and `curl localhost:8080/actuator/health`. Service logs: `docker compose logs -f app`.
 
-2. Start the service:
-   ```
-   ./mvnw spring-boot:run
-   ```
-   Database migrations (Flyway) run automatically at startup.
+If you set this up before the scope was trimmed, reset the database once first: `docker compose down -v` (the migrations changed).
+
+**For development (service outside Docker):** start only the dependencies, then run the service from source:
+```
+docker compose up -d postgres rabbitmq redis
+./mvnw spring-boot:run
+```
+Don't run both ways at once: they both use port 8080.
 
 ## Check it's working
 
@@ -151,8 +149,8 @@ Tests start their own PostgreSQL in Docker (Testcontainers), so Docker must be r
 
 | Task | Command | Data |
 |---|---|---|
-| Stop the service | `Ctrl+C` in its terminal | – |
-| Stop the database | `docker compose stop` | kept |
+| Stop the service | `docker compose stop app`, or `Ctrl+C` if it runs from source | – |
+| Stop everything | `docker compose stop` | kept |
 | Remove the containers | `docker compose down` | kept (in a Docker volume); the Redis cache is emptied, which is harmless |
 | Start from an empty database | `docker compose down -v` | **deleted** |
 
@@ -185,4 +183,6 @@ Every setting has a local default, so nothing needs to be set to run locally. To
 | A threshold change has no effect | it was made directly in the database, so the cached copy (up to 24 hours old) is still used | publish a `ThresholdsChanged` event as shown above, or delete the entry by hand: `docker compose exec redis redis-cli del thresholds:patient:<patientId>` |
 | Log says "Threshold cache unavailable" | Redis is down or slow | `docker compose ps` and `docker compose start redis`. Ingest keeps working from PostgreSQL meanwhile |
 | Messages in `readings.thresholds-changed.dead` | a threshold update failed every retry (for example Redis down for a long time, or a bad event) | read the message in the RabbitMQ UI and the service log, fix the cause, then move it back to the main queue |
+| `docker compose up` says port 8080 is already allocated | the service is also running from source, or another app uses 8080 | stop the other one (`lsof -iTCP:8080 -sTCP:LISTEN`) |
+| The `app` container keeps restarting or exits | a dependency wasn't ready, or a startup error | `docker compose logs app`; the database errors there are the same as in the rows above |
 | Build fails at `spotless:check` | code isn't formatted | `./mvnw spotless:apply` |

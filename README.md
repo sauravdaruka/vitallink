@@ -14,6 +14,13 @@ What I am not doing, and why:
 - Other metric types (glucose, SpO2, weight): one metric done fully is enough to show the design
 - Stretch goals from the brief: better to spend the time on the required parts
 
+## Run it
+
+```
+docker compose up --build -d
+```
+Only Docker is needed. This starts the service with PostgreSQL, RabbitMQ and Redis and loads demo data. Then follow [docs/runbook.md](docs/runbook.md) for example requests (the happy path, a duplicate, an alert, a threshold change), checks and troubleshooting. Tests: `./mvnw verify` (needs Java 25 and Docker).
+
 ## Assumptions
 
 The brief leaves some things open. These are the assumptions I made, and the reason behind each one.
