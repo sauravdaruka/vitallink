@@ -77,6 +77,13 @@ thresholds:
     # slow request may have written back just after the first delete.
     settle-delay: 1s
 
+summary:
+  llm:
+    # A summary never waits longer than this for the model; after that the coach gets the fallback.
+    timeout: 3s
+    # At most this many model calls at once per instance (provider rate limit and cost); more get the fallback.
+    max-concurrent-calls: 4
+
 management:
   endpoints:
     web:

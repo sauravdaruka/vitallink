@@ -109,6 +109,13 @@ The read APIs have no login in this exercise (README A15). Demo data: `coach-ash
 
 (`date -v-1d` is the macOS form; on Linux use `date -u -d '1 day ago' +%Y-%m-%dT%H:%M:%SZ`.)
 
+## Get an AI summary
+
+```
+curl -s localhost:8080/v1/patients/patient-001/summary
+```
+Expected: `"source": "LLM"` with the stub model's text, and the real numbers under `facts`. A patient with no readings gives `"source": "FALLBACK"` and "No readings in the last 7 days". `?days=0` gives `400`.
+
 ## Change a threshold and see the cache follow
 
 Thresholds belong to the care-plan system, which announces changes with a `ThresholdsChanged` event (README A14). Here we play that system by publishing the event through the RabbitMQ management API.

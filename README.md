@@ -43,6 +43,7 @@ The brief leaves some things open. These are the assumptions I made, and the rea
 | A14 | The care-plan system announces threshold changes with a `ThresholdsChanged` event carrying the patient's full new set of limits. This service updates its copy and then deletes the cached entry. | Thresholds belong to another system, so changes arrive as events, and the event is also the trigger for cache invalidation. |
 | A15 | The read APIs have no login in this exercise. In production, coaches log in through the identity provider (OAuth2/OIDC) and see only their own patients. | The brief asks for one authentication scheme and allows describing the rest; the device API key is the one implemented. |
 | A16 | Readings are medical records and must be kept for years; I assume 7 years, as many medical-record rules require. Coaches work with recent data, so production keeps the last 6 months in PostgreSQL and moves older readings to cheap object storage, where they can still be queried. | The real period depends on regulations and contracts that aren't in the brief. 6 months keeps the database at about 1.8 TB while covering every coach screen (the read APIs allow at most 90 days per request). |
+| A17 | The reading summary uses a stubbed language model by default; no API key is needed. | The brief accepts a stub and evaluates the integration pattern. Everything around the model (timeout, call limit, fallback) is real and tested; a real client is one class that calls the provider over HTTP. |
 
 ## Sending readings
 
@@ -101,6 +102,39 @@ Ingest needs the patient's thresholds for every request, so they are cached in R
 - **Cache-aside:** ingest reads Redis first; on a miss it reads PostgreSQL and stores a copy for 24 hours. A device sends every 30 minutes to a few hours, so a short-lived entry would almost always have expired by the time it came back.
 - **Invalidation:** when a `ThresholdsChanged` event arrives (A14), the service replaces its copy in PostgreSQL, then deletes the cached entry, and deletes it again a second later. The second delete removes an old copy that a request may have written back just after the first one. If Redis is down, the update is retried. The 24-hour expiry is only a safety net.
 - **Redis is optional at runtime:** if it is down, ingest reads PostgreSQL instead, and the service stays healthy.
+
+## AI reading summary (Part C)
+
+`GET /v1/patients/{patientId}/summary?days=7` (1–30 days) returns a short summary of a patient's recent readings for a coach, for example "BP trending up over the last 4 days, two readings over the limit". The model is treated as advisory: it must never make the request fail or hang, and never touches ingest or alerting.
+
+```json
+{"patientId": "patient-001", "days": 7, "source": "LLM",
+ "summary": "...",
+ "facts": {"readingCount": 12, "averageSystolic": 141, "averageDiastolic": 86, "highestSystolic": 185,
+           "lowestSystolic": 122, "breaches": 2, "trend": "rising"},
+ "generatedAt": "2026-10-13T07:20:00Z"}
+```
+
+**How it's built.** Our code computes the facts (count, averages, range, breaches, trend) from PostgreSQL. The model only turns those facts into sentences, and the facts are always returned next to its text, so the coach can check them. `source` says who wrote the summary: `LLM`, or `FALLBACK` when our code wrote it from the facts because the model was unavailable. With no readings, the model isn't called at all.
+
+**Timeouts and fallbacks.** The model call runs on its own thread and is cut off after 3 seconds; the coach then gets the fallback, the same facts in plain words. A failing call (rate limited, server error, empty answer) also gives the fallback. Nothing is retried while a person is waiting. The endpoint is only on the read path, so a model outage can't affect ingest or alerts.
+
+**Cost and rate limits.** At most 4 model calls run at once per instance; a request over the limit gets the fallback immediately instead of queueing behind a slow provider (a slow call keeps its slot until it really ends). Prompts are small (a few lines of numbers), and a short-text model such as Claude Haiku would be the choice. With a real model I would also cache each patient's summary for a few minutes in Redis, since coaches reopen the same patient, and track tokens and spend per day with an alarm.
+
+**PHI.** The prompt holds only numbers and day counts: no patient ID, name or other identifier. A real provider would still need a business associate agreement, since readings are health data.
+
+**Evaluating quality.** Automatically: every number in the model's text must appear in the facts (a mismatch means it invented something, so use the fallback); a fixed set of example patients (rising, falling, steady, no readings, many breaches) is run on every prompt or model change and compared with expected statements. With people: coaches mark a summary as helpful or wrong, and a clinician reviews a sample each week.
+
+**Failure modes considered.**
+
+| Failure | What happens |
+|---|---|
+| Model slow | Cut off at 3 s; fallback |
+| Model down, rate limited (429) or erroring (5xx) | Fallback; no retry while the coach waits |
+| Many coaches at once | Over 4 concurrent calls, fallback at once instead of a queue |
+| Empty answer | Fallback |
+| Wrong numbers or advice in the text | Facts shown next to it, labelled `LLM`; the prompt forbids diagnosis; the number check above in production |
+| No readings | No model call; "No readings in the last N days" |
 
 ## Load test
 
