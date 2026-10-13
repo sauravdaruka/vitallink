@@ -288,3 +288,34 @@ it.
 
 **In review, ask:** what lock does this statement take, on which table, and for how long? If the answer isn't
 obvious, test the migration against a copy with production-like data while a load test runs.
+
+### A code-review take on my own shortcut
+
+The corner I knowingly cut is in the outbox relay. This is the comment I'd want a senior engineer to leave on it:
+
+> **`OutboxRelay.java:99`**: `sendBatch()` waits for RabbitMQ's confirms (up to 5 s) inside the transaction that
+> holds the `FOR UPDATE` locks on the batch and one pooled connection. That's the exact pattern convention 1 tells
+> everyone else not to use.
+>
+> I can see why it's acceptable today, and I agree. The locks are only on `outbox` rows, never on `readings`, so
+> ingest keeps inserting. The wait has a 5 s ceiling. It's one connection per instance. And every failure ends the
+> same safe way: rollback, nothing marked sent, retry on the next run. It's the simplest design that can't mark an
+> unconfirmed event as sent.
+>
+> The risk is a broker that is up but slow, not one that is down (a down broker fails fast). If confirms take
+> 4 s during the 7 AM peak, the relay holds 1 of our 10 connections almost all the time, and batches confirmed
+> after the timeout are sent again. Convention 2 makes those repeats harmless, but they still cost work.
+>
+> Two asks:
+> 1. **Now:** add a timer around the confirm wait, and a comment on `sendBatch()` saying why this exception to
+>    convention 1 is allowed here (side table, ceiling, one connection). Then nobody copies the pattern into code
+>    that touches `readings` or holds many connections.
+> 2. **When confirm time regularly goes above about 100 ms, or before we raise the batch size or send in parallel:**
+>    split it into claim, send, mark. A short transaction sets a `claimed_until` well beyond the confirm timeout
+>    (say 30 s) and commits. The send happens with no transaction open. A second short transaction sets `sent_at`.
+>    An expired claim is simply picked up again. Duplicates stay possible either way, so the consumer rules don't
+>    change.
+
+A related one I'd fix first, because it's a missed detail rather than a trade-off:
+`ReadingPartitionMaintainer` creates partitions without a `lock_timeout`, so on a bad morning it could queue every
+insert behind its own lock. That breaks my convention 3.
