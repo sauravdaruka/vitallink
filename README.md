@@ -227,3 +227,64 @@ Central), and an admin API secured with a shared key right after it had told me 
 doesn't know our constraints. Check versions and facts at the source, run the app the way a user would, read the
 query plan, and when a result looks odd, look at the data before the summary. Above all, deciding what not to
 build stays with the engineer. The tool makes adding things cheap, which makes saying no more important.
+
+## Design decisions & conventions (Part E)
+
+This is for the engineer who will own this service next. The short version of how it works: a device's readings
+are saved to PostgreSQL first, and that save is what "accepted" means. Anything that has to happen because of a
+reading (an alert, a notification) happens later, through the outbox and RabbitMQ, so a slow alert path can never
+slow down ingest. The reasons behind each choice are in [Assumptions](#assumptions) and
+[docs/design.md](docs/design.md). Three rules hold this together. Please hold the line on them in review, mine
+included.
+
+### 1. Anything another system must hear about goes through the outbox, in the same transaction
+
+When a reading breaks a limit, `ReadingIngestService` saves the reading and an `outbox` row in one transaction.
+`OutboxRelay` publishes the row to RabbitMQ afterwards. Never publish to RabbitMQ, or call another service, from
+the code that saves the data.
+
+**Why it matters here:** if you save and then publish, a crash between the two loses the alert, and nobody finds
+out until a patient with a dangerous reading is missed. If you publish and then save, a failed save leaves a coach
+with an alert for a reading that doesn't exist. With the outbox both happen or neither does, and if RabbitMQ is
+down, alerts are delayed, not lost. A slow outside call inside a transaction also holds a database connection and
+its locks for the whole call, which is how a broker hiccup becomes an ingest outage.
+
+**In review, ask:** is there a `RabbitTemplate` call, an HTTP call or a model call anywhere near a database
+write? A new event type means a new `outbox.add(...)` inside the existing transaction, nothing else.
+
+### 2. Every consumer must be safe to run twice, and the database decides what is a duplicate
+
+RabbitMQ delivers at least once. The relay can publish a row twice (it crashed after sending but before marking
+it sent), and a worker can receive a message twice (it crashed before acknowledging). Duplicates are normal here,
+not rare. Kafka would be the same, so this rule stays if the broker ever changes.
+
+**Why it matters here:** a duplicate alert means a coach is paged twice for one reading, and soon learns to
+ignore pages. The fix is a unique constraint plus `ON CONFLICT DO NOTHING`: `alerts_reading_unique` on
+`(device_id, reading_id, measured_at)`, and a notification is only created when the insert actually added a row.
+A check in Java ("does the alert exist? if not, insert it") is not enough, because two workers can both see
+"no" at the same moment.
+
+**In review, ask:** what happens if this message arrives twice, or twice at the same instant? Prove it with a
+test against real PostgreSQL (Testcontainers), as `ConcurrentRetryTest` and `AlertPipelineTest` do. A mock
+can't show a race the database would catch.
+
+### 3. Database changes must be safe on a live, busy table
+
+`readings` takes inserts all day, and most of them arrive between 6 and 9 AM. A change that needs a strong lock
+on it, even for a moment, queues every insert behind it.
+
+- **Never edit a migration once it has been released.** Add a new one. (V3 and V4 were edited during development,
+  before any release.)
+- **Expand, then contract.** To rename or change a column: add the new one, write to both, backfill in small
+  batches, switch reads, and drop the old one in a later release.
+- **Indexes:** `CREATE INDEX CONCURRENTLY`, which means a migration outside a transaction.
+- **Always set `lock_timeout`** (for example `SET lock_timeout = '3s'`) so a migration that can't get its lock fails
+  quickly instead of blocking everything waiting behind it. Retrying a failed migration is cheap. An ingest outage
+  at 7:15 AM is not.
+
+**Why it matters here:** this is the 7:15 AM incident in [docs/design.md](docs/design.md#7-a-live-incident-715-am).
+A schema change left open in a console held a lock on `readings`, and every insert for every patient queued behind
+it.
+
+**In review, ask:** what lock does this statement take, on which table, and for how long? If the answer isn't
+obvious, test the migration against a copy with production-like data while a load test runs.
