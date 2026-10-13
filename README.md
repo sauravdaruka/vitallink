@@ -197,3 +197,33 @@ What these numbers mean for the design:
 
 1. **50 readings per device per day is too many for blood pressure cuffs alone.** A cuff is used 1 to 3 times a day. Most of the volume must come from devices that send often, such as pulse oximeters. I only implement blood pressure, but the database and ingest path are sized for the total volume across all devices.
 2. **About 150 alerts per coach per day is more than a person can act on.** Coaches would start ignoring alerts, which is a patient-safety risk. The design needs alert de-duplication, for example not opening a new alert when the patient already has an open one for the same metric.
+
+## How I worked (Part D)
+
+I used **Claude Code** (Claude Opus) in the terminal, inside this repository, mainly for code generation: the
+Spring Boot service, the SQL migrations, the seed data (demo devices, coaches and thresholds), the tests, the
+Docker setup and the k6 script. It also helped with first drafts of the docs and with checking current library
+versions. I made the design decisions, reviewed every change and approved every commit myself.
+
+**Where it helped.** It was fastest at the parts that are easy to check: boilerplate, test cases, and SQL I could run
+straight away. It was also good at checking its own claims when asked to run the real thing instead of trusting a
+green build. It stopped RabbitMQ mid-run to show an alert is delayed but not lost. It ran `EXPLAIN` on the
+"latest readings" query and found it opened every daily partition, which the passing tests had not shown. And it
+reran the load test with a bigger connection pool to test its own claim about the bottleneck (+17% throughput,
++40% database CPU, so the real limit is database work per request, not the pool).
+
+**Where I had to correct it.** Two cases stand out. First, it proposed caching device keys and thresholds with a
+60-second expiry. It sounded reasonable, but when I asked how often the same key comes back, the numbers showed a
+device calls every 30 minutes or more, so the cache would almost never hit. Its next suggestion also turned out to
+save nothing once we looked at the actual query it was meant to replace. The design we kept (cache each patient's
+limits, delete the copy when they change) came from checking the access pattern, not from the first idea. Second,
+scope creep: over many steps it kept proposing sensible extras (alert grouping, severity levels, coach login, an
+admin API, custom metrics), and I accepted several. When I asked whether one small detail was in the brief, it was
+not, and neither were many of the others. I removed them all and listed them under "Left out on purpose". Smaller
+cases: library versions from an outdated index that crashed on Java 25 (the build caught it, and I checked Maven
+Central), and an admin API secured with a shared key right after it had told me people should log in with JWTs.
+
+**What I'd ask of a team using these tools.** Treat the output as a draft from a fast, confident colleague who
+doesn't know our constraints. Check versions and facts at the source, run the app the way a user would, read the
+query plan, and when a result looks odd, look at the data before the summary. Above all, deciding what not to
+build stays with the engineer. The tool makes adding things cheap, which makes saying no more important.
