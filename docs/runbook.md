@@ -1,18 +1,36 @@
-# Runbook: run and test the service
+# 🧪 Runbook · run and test the service
 
-A guided tour for running the service locally and seeing every behaviour the brief asks for. Each step has commands
-to copy and the result to expect. The whole tour takes about 10 minutes (15 with the load test).
+**A guided tour of every behaviour the brief asks for: copy each command, compare with the expected result.** About 10 minutes (15 with the load test).
+
+[← Back to README](../README.md) · [Design at scale](design.md) · [Load test](load-test.md) · [Postman collection](vitallink.postman_collection.json)
+
+| | Section | What you'll see |
+|---|---|---|
+| 1 | [Start](#-1-start) | the stack up and healthy |
+| 2 | [Helpers](#-2-helpers-for-the-commands-below) | short commands for everything below |
+| 3 | [Device authentication](#-3-device-authentication) | 401 / 400 / 403 |
+| 4 | [Send readings](#-4-send-readings-the-happy-path-and-duplicates) | `ACCEPTED`, `DUPLICATE`, `REJECTED` |
+| 5 | [Alerts](#-5-alerts-a-breach-goes-through-the-outbox-and-rabbitmq-to-the-coach) | outbox → RabbitMQ → one alert, one notification |
+| 6 | [Read APIs](#-6-read-apis) | latest, time range, coach queue |
+| 7 | [AI summary](#-7-ai-reading-summary-part-c) | `LLM` and `FALLBACK` |
+| 8 | [Threshold changes](#-8-threshold-changes-and-the-redis-cache) | a new limit applies; the cache is cleared |
+| 9 | [Failure modes](#-9-failure-modes-dependencies-going-down) | Redis down, RabbitMQ down |
+| 10 | [Load test](#-10-load-test) | k6 burst |
+| 11–12 | [Build and tests](#-11-build-and-tests) · [From source](#-12-running-the-service-from-source-for-development) | for development |
+| | [Stop and reset](#-stop-and-reset) · [Configuration](#-configuration) · [Troubleshooting](#-troubleshooting) | |
 
 ---
 
-## 1. Start
+## 🚀 1. Start
 
-You need **Docker** (running). Java 25 is only needed to build or test outside Docker.
+You only need **Docker** (running).
 
 ```bash
-docker compose down -v          # only if you ran an earlier version of this project: starts from an empty database
 docker compose up --build -d    # first build downloads dependencies: a few minutes
 ```
+
+> [!WARNING]
+> Ran an earlier version of this project before? Start from an empty database first with `docker compose down -v`, or startup fails with `Migration checksum mismatch`.
 
 This builds the service image and starts PostgreSQL, RabbitMQ and Redis; the service starts once they are healthy.
 Database migrations (Flyway) and demo data load at startup.
@@ -22,15 +40,14 @@ docker compose ps                         # postgres, rabbitmq, redis "(healthy)
 curl -s localhost:8080/actuator/health    # {"groups":["liveness","readiness"],"status":"UP"}
 ```
 
-If the app isn't up after a minute: `docker compose logs app` (and see [Troubleshooting](#troubleshooting)).
+If the app isn't up after a minute: `docker compose logs app`, and see [Troubleshooting](#-troubleshooting).
 
-**Prefer Postman?** Import [`vitallink.postman_collection.json`](vitallink.postman_collection.json) (in this folder).
-It has the requests from sections 3–8 in the same order, and each one checks its own result, so **Run collection**
-shows everything passing. The database, Redis and failure-mode checks below need a terminal.
+> [!TIP]
+> **Prefer Postman?** Import [`vitallink.postman_collection.json`](vitallink.postman_collection.json) and click **Run collection**: sections 3–8 in the same order, each request checking its own result. Database, Redis and failure-mode checks need the terminal.
 
 ---
 
-## 2. Helpers for the commands below
+## 🧰 2. Helpers for the commands below
 
 Paste these into your terminal once (bash or zsh). They keep every command below to one readable line.
 
@@ -91,7 +108,7 @@ Every patient also has diastolic 50–110 and pulse 40–130. These keys are for
 
 ---
 
-## 3. Device authentication
+## 🔐 3. Device authentication
 
 ```bash
 status                                          # 401  no key
@@ -109,7 +126,7 @@ PATIENT=patient-002 send local-key-bp-001 "$(reading 120 80)"
 
 ---
 
-## 4. Send readings: the happy path and duplicates
+## 📥 4. Send readings: the happy path and duplicates
 
 **One reading, then the same reading again** (a device retrying because it never got the answer):
 
@@ -144,7 +161,7 @@ db "select tableoid::regclass as partition, device_id, patient_id, systolic, dia
 
 ---
 
-## 5. Alerts: a breach goes through the outbox and RabbitMQ to the coach
+## 🔔 5. Alerts: a breach goes through the outbox and RabbitMQ to the coach
 
 ```bash
 R=$(reading 185 112)
@@ -185,7 +202,7 @@ docker compose logs app | grep 'no coach'                                       
 
 ---
 
-## 6. Read APIs
+## 🔎 6. Read APIs
 
 The read APIs have no login in this exercise (README A15).
 
@@ -195,8 +212,6 @@ get "/v1/patients/patient-002/readings?from=$(ago 1)&to=$(now)"   # the last day
 get /v1/coaches/coach-asha/alerts                               # Asha's alert queue, newest first
 get /v1/coaches/coach-ben/alerts                                # Ben's: only his patients' alerts
 ```
-
-(`date -v-1d` is macOS; on Linux use `date -u -d '1 day ago' +%Y-%m-%dT%H:%M:%SZ`.)
 
 Invalid queries get `400` with a clear message:
 
@@ -208,7 +223,7 @@ get "/v1/patients/patient-001/readings/latest?limit=0"                       # 4
 
 ---
 
-## 7. AI reading summary (Part C)
+## 🤖 7. AI reading summary (Part C)
 
 ```bash
 get /v1/patients/patient-001/summary
@@ -223,7 +238,7 @@ The model is a stub by default (README A17). Timeouts, the limit on calls at onc
 
 ---
 
-## 8. Threshold changes and the Redis cache
+## ⚡ 8. Threshold changes and the Redis cache
 
 Thresholds belong to the care-plan system, which announces changes with a `ThresholdsChanged` event (README A14).
 Here we play that system by publishing the event through RabbitMQ's management API.
@@ -266,7 +281,7 @@ limit 180                                                  # put it back
 
 ---
 
-## 9. Failure modes: dependencies going down
+## 💥 9. Failure modes: dependencies going down
 
 **Redis down:** ingest and alerting keep working; thresholds come from PostgreSQL.
 
@@ -294,7 +309,7 @@ once; that's expected.
 
 ---
 
-## 10. Load test
+## 📈 10. Load test
 
 With the stack running:
 
@@ -319,7 +334,7 @@ To try a bigger connection pool: `DB_POOL_SIZE=20 docker compose up -d app`. The
 
 ---
 
-## 11. Build and tests
+## 🔨 11. Build and tests
 
 | Task | Command |
 |---|---|
@@ -332,7 +347,7 @@ don't use the `docker compose` stack.
 
 ---
 
-## 12. Running the service from source (for development)
+## 💻 12. Running the service from source (for development)
 
 Start only the dependencies, then run the service from your IDE (`ReadingsServiceApplication`) or Maven:
 
@@ -341,11 +356,12 @@ docker compose up -d postgres rabbitmq redis
 ./mvnw spring-boot:run
 ```
 
-Don't run it this way and in Docker at the same time: both use port 8080 (`docker compose stop app` first).
+> [!WARNING]
+> Don't run it this way and in Docker at the same time: both use port 8080. Run `docker compose stop app` first.
 
 ---
 
-## Stop and reset
+## 🛑 Stop and reset
 
 | Task | Command | Data |
 |---|---|---|
@@ -355,7 +371,7 @@ Don't run it this way and in Docker at the same time: both use port 8080 (`docke
 
 ---
 
-## Configuration
+## 🔧 Configuration
 
 Every setting has a local default, so nothing needs to be set to run locally. To override, copy `.env.example` to
 `.env` and edit it.
@@ -370,7 +386,7 @@ Every setting has a local default, so nothing needs to be set to run locally. To
 
 ---
 
-## Troubleshooting
+## 🩺 Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---|---|---|

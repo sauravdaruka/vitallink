@@ -36,7 +36,7 @@
 
 ---
 
-## 🗺️ Where to find each part
+## 📚 Where to find each part
 
 | Part | Where |
 |---|---|
@@ -130,7 +130,7 @@ The brief leaves some things open. The ones that shape the design:
 | A5 | Device-to-patient mapping, thresholds and coach panels are owned by other services; here they are seed data. | This service only reads them. |
 | A6 | `ACCEPTED` means saved in PostgreSQL; alerts follow within seconds. | The device deletes its copy on `ACCEPTED`, so it must already be durable. |
 | A7 | Local Docker uses a throwaway password and demo device keys. Production takes every credential from a secret manager and never loads demo data. | "No secrets in the repo" and "one command to run" both hold. |
-| A8 | Scale figures beyond the brief's are my estimates ([design doc §2](docs/design.md#2-scaling-to-1m-devices-and-50m-readings-a-day)). | Sizing partitions and the database needs them. |
+| A8 | Scale figures beyond the brief's are my estimates ([design doc §2](docs/design.md#-2-scaling-to-1m-devices-and-50m-readings-a-day)). | Sizing partitions and the database needs them. |
 | A9 | Every request is a batch (a single reading is a batch of one), at most 500. | One code path for duplicates and validation; no huge request holds a connection. |
 | A10 | A retry resends the reading unchanged, including `measuredAt`. | The duplicate key includes `measuredAt` (PostgreSQL needs the partition column in it). A changed time on retry is a firmware bug, found by a periodic query rather than an extra check on every insert. |
 | A11 | Each patient has their own limits per metric and one alert level. | "Each patient has thresholds per metric"; one level shows the full path. |
@@ -235,7 +235,7 @@ A k6 burst on one laptop: one instance, a pool of 10 connections, 5% retries, 1%
 
 ---
 
-## ✂️ Left out on purpose
+## 🚧 Left out on purpose
 
 The brief asks for a credible core, not a complete platform. Next, in rough order (the design doc explains each):
 
@@ -306,7 +306,7 @@ For the engineer who owns this service next.
   - expand, then contract, to rename or change a column;
   - `CREATE INDEX CONCURRENTLY`;
   - always set `lock_timeout`, so a migration that can't get its lock fails fast.
-- **Why it matters here:** `readings` takes inserts all day, most between 6 and 9 AM. This is the [7:15 AM incident](docs/design.md#7-a-live-incident-715-am): a schema change left open in a console queued every insert behind its lock.
+- **Why it matters here:** `readings` takes inserts all day, most between 6 and 9 AM. This is the [7:15 AM incident](docs/design.md#-7-a-live-incident-715-am): a schema change left open in a console queued every insert behind its lock.
 - **In review, ask:** what lock does this take, on which table, and for how long?
 
 ### A code-review take on my own shortcut
