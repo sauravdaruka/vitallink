@@ -1,154 +1,251 @@
-# Local runbook
+# Runbook: run and test the service
 
-How to start, check, load-test, stop and fix the service on a laptop.
+A guided tour for running the service locally and seeing every behaviour the brief asks for. Each step has commands
+to copy and the result to expect. The whole tour takes about 10 minutes (15 with the load test).
 
-## What you need
-- Docker (running). That's all to run the service.
-- Java 25, only to build, test or run the service outside Docker. Maven comes with the project (`./mvnw`).
+## 1. Start
 
-## Start
-
-**Everything in Docker (one command):**
-```
-docker compose up --build -d
-```
-This builds the service image (the first build downloads dependencies and takes a few minutes), starts PostgreSQL, RabbitMQ and Redis, and starts the service once they are healthy. Database migrations (Flyway) and demo data load at startup. Check with `docker compose ps` (the three dependencies show `(healthy)`) and `curl localhost:8080/actuator/health`. Service logs: `docker compose logs -f app`.
-
-If you set this up before the scope was trimmed, reset the database once first: `docker compose down -v` (the migrations changed).
-
-**For development (service outside Docker):** start only the dependencies, then run the service from source:
-```
-docker compose up -d postgres rabbitmq redis
-./mvnw spring-boot:run
-```
-Don't run both ways at once: they both use port 8080.
-
-## Check it's working
-
-| Check | Command | Expected |
-|---|---|---|
-| Service is up | `curl localhost:8080/actuator/health` | `{"status":"UP"}` |
-| Connection pool size | `curl localhost:8080/actuator/metrics/hikaricp.connections.max` | `10` |
-| Threads waiting for a DB connection | `curl localhost:8080/actuator/metrics/hikaricp.connections.pending` | `0` when idle |
-| Database is reachable | `docker compose exec postgres psql -U vitallink -d vitallink -c 'select 1'` | `1` |
-| Redis is reachable | `docker compose exec redis redis-cli ping` | `PONG` |
-| Migrations that have run | `docker compose exec postgres psql -U vitallink -d vitallink -c 'select version, description, success from flyway_schema_history'` | one row per migration |
-
-## Demo devices and keys
-
-The database is loaded with demo devices on startup (`src/main/resources/db/seed`). These keys are for local use only.
-
-| Device | Patient | API key (`X-Device-Key` header) |
-|---|---|---|
-| `bp-001` | `patient-001` | `local-key-bp-001` |
-| `bp-002` | `patient-002` | `local-key-bp-002` |
-| `bp-003` | `patient-003` | `local-key-bp-003` |
-| `bp-003` | `patient-003` | `local-key-bp-003-old` (revoked: always rejected) |
-
-| Check | Command | Expected |
-|---|---|---|
-| No key | `curl -i -X POST localhost:8080/v1/readings` | `401` |
-| Revoked key | `curl -i -X POST localhost:8080/v1/readings -H 'X-Device-Key: local-key-bp-003-old'` | `401` |
-| Valid key, no body | `curl -i -X POST localhost:8080/v1/readings -H 'X-Device-Key: local-key-bp-001'` | `400` (the key was accepted) |
-
-## Send a reading
-
-Happy path, then the same reading again (the duplicate path):
+You need **Docker** (running). Java 25 is only needed to build or test outside Docker.
 
 ```bash
-BODY=$(cat <<JSON
-{"readings": [{"readingId": "$(uuidgen)", "metricType": "BLOOD_PRESSURE",
-  "systolic": 182, "diastolic": 111, "pulse": 74,
-  "measuredAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"}]}
-JSON
-)
-curl -s -X POST localhost:8080/v1/readings -H 'X-Device-Key: local-key-bp-001' \
-  -H 'Content-Type: application/json' -d "$BODY"   # {"results":[{..."status":"ACCEPTED"}]}
-curl -s -X POST localhost:8080/v1/readings -H 'X-Device-Key: local-key-bp-001' \
-  -H 'Content-Type: application/json' -d "$BODY"   # {"results":[{..."status":"DUPLICATE"}]}
+docker compose down -v          # only if you ran an earlier version of this project: starts from an empty database
+docker compose up --build -d    # first build downloads dependencies: a few minutes
 ```
 
-Check where it was stored: `docker compose exec postgres psql -U vitallink -d vitallink -c 'select tableoid::regclass, * from readings'` shows today's daily partition.
-
-## See an alert being raised
-
-The demo data gives `patient-001` (device `bp-001`) the coach `coach-asha`. Send a high reading:
+This builds the service image and starts PostgreSQL, RabbitMQ and Redis; the service starts once they are healthy.
+Database migrations (Flyway) and demo data load at startup.
 
 ```bash
-BODY=$(cat <<JSON
-{"readings": [{"readingId": "$(uuidgen)", "metricType": "BLOOD_PRESSURE",
-  "systolic": 185, "diastolic": 112, "pulse": 80,
-  "measuredAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"}]}
-JSON
-)
-curl -s -X POST localhost:8080/v1/readings -H 'X-Device-Key: local-key-bp-001' \
-  -H 'Content-Type: application/json' -d "$BODY"
+docker compose ps                         # postgres, rabbitmq, redis "(healthy)", app "Up"
+curl -s localhost:8080/actuator/health    # {"groups":["liveness","readiness"],"status":"UP"}
 ```
 
-Within a second:
+If the app isn't up after a minute: `docker compose logs app` (and see [Troubleshooting](#troubleshooting)).
 
-| Check | Command | Expected |
-|---|---|---|
-| The alert | `docker compose exec postgres psql -U vitallink -d vitallink -c 'select id, patient_id, reason, coach_id from alerts'` | one alert for `coach-asha`, with the limit that was broken |
-| The coach was notified | `docker compose exec postgres psql -U vitallink -d vitallink -c 'select alert_id, coach_id, created_at from notifications'` | one row for `coach-asha` |
-| Nothing stuck in the outbox | `docker compose exec postgres psql -U vitallink -d vitallink -c 'select count(*) from outbox where sent_at is null'` | `0` |
-| Queues | RabbitMQ UI at http://localhost:15672 (user and password `vitallink`) | `alerting.reading-breached` and `alerting.reading-breached.dead` empty |
+**Prefer Postman?** Import [`vitallink.postman_collection.json`](vitallink.postman_collection.json) (in this folder).
+It has the requests from sections 3–8 in the same order, and each one checks its own result, so **Run collection**
+shows everything passing. The database, Redis and failure-mode checks below need a terminal.
 
-Every high reading raises its own alert and notification. A reading for `patient-003` (key `local-key-bp-003`) raises an alert with no coach: it is stored, nobody is notified, and the log says so.
+## 2. Helpers for the commands below
 
-## Read readings and alerts
+Paste these into your terminal once (bash or zsh). They only shorten the curls.
 
-The read APIs have no login in this exercise (README A15). Demo data: `coach-asha` looks after `patient-001`, `coach-ben` looks after `patient-002`, and `patient-003` has no coach.
-
-| Check | Command | Expected |
-|---|---|---|
-| Latest readings | `curl -s localhost:8080/v1/patients/patient-001/readings/latest` | readings, newest first |
-| A time range | `curl -s "localhost:8080/v1/patients/patient-001/readings?from=$(date -u -v-1d +%Y-%m-%dT%H:%M:%SZ)&to=$(date -u +%Y-%m-%dT%H:%M:%SZ)"` | readings from the last day |
-| An invalid range | the same with `from` after `to` | `400` |
-| A coach's alerts | `curl -s localhost:8080/v1/coaches/coach-asha/alerts` | Asha's alerts, newest first |
-
-(`date -v-1d` is the macOS form; on Linux use `date -u -d '1 day ago' +%Y-%m-%dT%H:%M:%SZ`.)
-
-## Get an AI summary
-
+```bash
+now()     { date -u +%Y-%m-%dT%H:%M:%SZ; }
+# One blood-pressure reading: reading <systolic> <diastolic>
+reading() { printf '{"readingId":"%s","metricType":"BLOOD_PRESSURE","systolic":%s,"diastolic":%s,"pulse":74,"measuredAt":"%s"}' "$(uuidgen)" "$1" "$2" "$(now)"; }
+# Send readings as a device: send <device key> <JSON body>
+send()    { curl -s -w '  [HTTP %{http_code}]\n' -X POST localhost:8080/v1/readings -H "X-Device-Key: $1" -H 'Content-Type: application/json' -d "$2"; }
+# Run SQL against the service's database: db "<sql>"
+db()      { docker compose exec -T postgres psql -U vitallink -d vitallink -c "$1"; }
 ```
+
+(`uuidgen` ships with macOS and most Linux distributions; otherwise use `cat /proc/sys/kernel/random/uuid`.)
+
+### Demo data
+
+| Device | Patient | API key (`X-Device-Key`) | Coach | Systolic limit |
+|---|---|---|---|---|
+| `bp-001` | `patient-001` | `local-key-bp-001` | `coach-asha` | 90–180 |
+| `bp-002` | `patient-002` | `local-key-bp-002` | `coach-ben` | 90–170 |
+| `bp-003` | `patient-003` | `local-key-bp-003` | none | 90–180 |
+| `bp-003` | `patient-003` | `local-key-bp-003-old` (revoked) | | |
+
+Every patient also has diastolic 50–110 and pulse 40–130. These keys are for local use only.
+
+## 3. Device authentication
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' -X POST localhost:8080/v1/readings                                          # 401: no key
+curl -s -o /dev/null -w '%{http_code}\n' -X POST localhost:8080/v1/readings -H 'X-Device-Key: wrong-key'             # 401: unknown key
+curl -s -o /dev/null -w '%{http_code}\n' -X POST localhost:8080/v1/readings -H 'X-Device-Key: local-key-bp-003-old'  # 401: revoked key
+curl -s -o /dev/null -w '%{http_code}\n' -X POST localhost:8080/v1/readings -H 'X-Device-Key: local-key-bp-001'      # 400: key accepted, no body
+```
+
+A device may only send readings for its own patient. `patientId` in the body is optional; if it's sent, it must match:
+
+```bash
+send local-key-bp-001 "{\"patientId\":\"patient-002\",\"readings\":[$(reading 120 80)]}"
+# {"detail":"this device is not assigned to that patient",...,"status":403,...}  [HTTP 403]
+```
+
+## 4. Send readings: the happy path and duplicates
+
+**One reading, then the same reading again** (a device retrying because it never got the answer):
+
+```bash
+BODY="{\"readings\":[$(reading 120 80)]}"
+send local-key-bp-001 "$BODY"    # {"results":[{"readingId":"…","status":"ACCEPTED"}]}   [HTTP 200]
+send local-key-bp-001 "$BODY"    # {"results":[{"readingId":"…","status":"DUPLICATE"}]}  [HTTP 200]
+```
+
+`ACCEPTED` means the reading is stored in PostgreSQL, so the device can delete its copy. `DUPLICATE` means it was
+already stored: the device can delete it too, and nothing is stored or alerted twice.
+
+**A batch** (a device flushing its offline buffer): each reading gets its own result.
+
+```bash
+send local-key-bp-002 "{\"readings\":[$(reading 130 85),$(reading 70 90),$(reading 125 82)]}"
+# ACCEPTED, REJECTED ("systolic must be higher than diastolic"), ACCEPTED   [HTTP 200]
+```
+
+**Requests that are wrong as a whole** get `400`:
+
+```bash
+send local-key-bp-001 '{"readings": []}'   # 400: readings must contain at least one reading
+send local-key-bp-001 '{"readings": ['     # 400: malformed JSON
+```
+
+**Where the readings are stored** (daily partitions; today's is `readings_YYYY_MM_DD`, in UTC):
+
+```bash
+db "select tableoid::regclass as partition, device_id, patient_id, systolic, diastolic, measured_at from readings order by received_at"
+```
+
+## 5. Alerts: a breach goes through the outbox and RabbitMQ to the coach
+
+```bash
+BODY="{\"readings\":[$(reading 185 112)]}"
+send local-key-bp-001 "$BODY"   # ACCEPTED: the device gets its answer before any alert work happens
+send local-key-bp-001 "$BODY"   # DUPLICATE: the retry must not raise a second alert
+sleep 1
+```
+
+What happened, step by step:
+
+```bash
+db "select event_type, payload->>'reason' as reason, sent_at is not null as sent from outbox"
+#  ReadingBreached | systolic 185 above 180; diastolic 112 above 110 | t      ← saved with the reading, then sent to RabbitMQ
+
+db "select id, patient_id, reason, coach_id from alerts"
+#  1 | patient-001 | systolic 185 above 180; diastolic 112 above 110 | coach-asha    ← one alert, despite the retry
+
+db "select alert_id, coach_id, created_at from notifications"
+#  1 | coach-asha | …                                                        ← the coach was notified once
+
+docker compose exec rabbitmq rabbitmqctl -q list_queues name messages consumers
+#  alerting.reading-breached 0 2, and both *.dead (dead-letter) queues 0     ← nothing stuck
+```
+
+The RabbitMQ UI is at http://localhost:15672 (user and password `vitallink`).
+
+**A patient with no coach** still gets an alert, nobody is notified, and the service logs it:
+
+```bash
+send local-key-bp-003 "{\"readings\":[$(reading 190 100)]}"
+sleep 1
+db "select id, patient_id, reason, coach_id from alerts where patient_id = 'patient-003'"   # coach_id empty
+docker compose logs app | grep 'no coach'                                                      # "Alert … has no coach to notify"
+```
+
+**A low reading** breaks a limit too: `send local-key-bp-002 "{\"readings\":[$(reading 85 60)]}"` raises
+"systolic 85 below 90" for `coach-ben`.
+
+## 6. Read APIs
+
+The read APIs have no login in this exercise (README A15).
+
+```bash
+curl -s localhost:8080/v1/patients/patient-001/readings/latest              # newest first (default 20, ?limit= up to 100)
+curl -s "localhost:8080/v1/patients/patient-002/readings?from=$(date -u -v-1d +%Y-%m-%dT%H:%M:%SZ)&to=$(now)"   # a time range
+curl -s localhost:8080/v1/coaches/coach-asha/alerts                         # Asha's alert queue, newest first
+curl -s localhost:8080/v1/coaches/coach-ben/alerts                          # Ben's: only his patients' alerts
+```
+
+(`date -v-1d` is macOS; on Linux use `date -u -d '1 day ago' +%Y-%m-%dT%H:%M:%SZ`.)
+
+Invalid queries get `400` with a clear message:
+
+```bash
+curl -s "localhost:8080/v1/patients/patient-002/readings?from=$(now)&to=2020-01-01T00:00:00Z"   # from must be before to
+curl -s "localhost:8080/v1/patients/patient-002/readings?from=2020-01-01T00:00:00Z&to=$(now)"   # the range can be at most 90 days
+curl -s "localhost:8080/v1/patients/patient-001/readings/latest?limit=0"                         # limit must be between 1 and 100
+```
+
+## 7. AI reading summary (Part C)
+
+```bash
 curl -s localhost:8080/v1/patients/patient-001/summary
+# "source":"LLM", the stub model's text, and the real numbers under "facts" (count, averages, range, breaches, trend)
+curl -s localhost:8080/v1/patients/patient-999/summary
+# "source":"FALLBACK", "No readings in the last 7 days." (the model isn't called)
+curl -s "localhost:8080/v1/patients/patient-001/summary?days=0"   # 400: days must be between 1 and 30
 ```
-Expected: `"source": "LLM"` with the stub model's text, and the real numbers under `facts`. A patient with no readings gives `"source": "FALLBACK"` and "No readings in the last 7 days". `?days=0` gives `400`.
 
-## Change a threshold and see the cache follow
+The model is a stub by default (README A17). Timeouts, the limit on calls at once and the fallback are covered by
+`SummaryServiceTest`.
 
-Thresholds belong to the care-plan system, which announces changes with a `ThresholdsChanged` event (README A14). Here we play that system by publishing the event through the RabbitMQ management API.
+## 8. Threshold changes and the Redis cache
 
-1. Send a reading of 150/90 for `patient-001`. It is under the limit (180), so no alert:
-   ```bash
-   send() { curl -s -X POST localhost:8080/v1/readings -H 'X-Device-Key: local-key-bp-001' \
-     -H 'Content-Type: application/json' \
-     -d "{\"readings\": [{\"readingId\": \"$(uuidgen)\", \"metricType\": \"BLOOD_PRESSURE\", \"systolic\": $1, \"diastolic\": 90, \"measuredAt\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}]}"; echo; }
-   send 150
-   ```
-2. The patient's limits are now cached: `docker compose exec redis redis-cli get thresholds:patient:patient-001`.
-3. Lower the systolic limit to 140:
-   ```bash
-   curl -s -u vitallink:vitallink -H 'Content-Type: application/json' \
-     -X POST localhost:15672/api/exchanges/%2F/careplan.events/publish -d '{
-       "routing_key": "ThresholdsChanged", "properties": {"content_type": "application/json"},
-       "payload_encoding": "string",
-       "payload": "{\"patientId\":\"patient-001\",\"thresholds\":[{\"metric\":\"SYSTOLIC\",\"below\":90,\"above\":140},{\"metric\":\"DIASTOLIC\",\"below\":50,\"above\":110},{\"metric\":\"PULSE\",\"below\":40,\"above\":130}]}"}'
-   ```
-   Expected: `{"routed":true}`. Within a second the cached entry is gone (`redis-cli get ...` returns nothing) and `select * from thresholds where patient_id = 'patient-001'` shows 140.
-4. Send 150/90 again: `send 150`. This time it breaks the new limit and an alert appears ("systolic 150 above 140").
-5. Put the limit back to 180 by publishing the same event with `"above":180`.
+Thresholds belong to the care-plan system, which announces changes with a `ThresholdsChanged` event (README A14).
+Here we play that system by publishing the event through RabbitMQ's management API.
 
-**Redis down:** `docker compose stop redis`, then `send 150`. The reading is still `ACCEPTED`; thresholds come from PostgreSQL and the service log says "Threshold cache unavailable" once. `docker compose start redis` and the log says "Threshold cache works again".
-
-## Run the load test
-
-With the stack running from `docker compose up --build -d`:
+```bash
+send local-key-bp-001 "{\"readings\":[$(reading 150 90)]}"     # under the limit (180): no alert
+docker compose exec redis redis-cli get thresholds:patient:patient-001   # the patient's limits are now cached
+docker compose exec redis redis-cli ttl thresholds:patient:patient-001   # about 86400 (24 hours)
 ```
+
+Lower the systolic limit to 140:
+
+```bash
+limit() { curl -s -u vitallink:vitallink -H 'Content-Type: application/json' \
+  -X POST localhost:15672/api/exchanges/%2F/careplan.events/publish \
+  -d "{\"routing_key\":\"ThresholdsChanged\",\"properties\":{\"content_type\":\"application/json\"},\"payload_encoding\":\"string\",\"payload\":\"{\\\"patientId\\\":\\\"patient-001\\\",\\\"thresholds\\\":[{\\\"metric\\\":\\\"SYSTOLIC\\\",\\\"below\\\":90,\\\"above\\\":$1},{\\\"metric\\\":\\\"DIASTOLIC\\\",\\\"below\\\":50,\\\"above\\\":110},{\\\"metric\\\":\\\"PULSE\\\",\\\"below\\\":40,\\\"above\\\":130}]}\"}"; echo; }
+limit 140                                                                  # {"routed":true}
+sleep 2
+docker compose exec redis redis-cli get thresholds:patient:patient-001    # empty: the cached copy was deleted
+db "select metric, below, above from thresholds where patient_id = 'patient-001'"   # SYSTOLIC 90 | 140
+```
+
+The same reading now breaks the new limit:
+
+```bash
+send local-key-bp-001 "{\"readings\":[$(reading 150 90)]}"
+sleep 1
+db "select reason from alerts order by id desc limit 1"    # systolic 150 above 140
+limit 180                                                  # put it back
+```
+
+## 9. Failure modes: dependencies going down
+
+**Redis down:** ingest and alerting keep working; thresholds come from PostgreSQL.
+
+```bash
+docker compose stop redis
+send local-key-bp-001 "{\"readings\":[$(reading 182 90)]}"    # still ACCEPTED, and the alert is still raised
+docker compose start redis
+docker compose logs app | grep 'Threshold cache'              # "unavailable…" once, then "works again" once
+```
+
+**RabbitMQ down:** ingest stays fast; alerts are delayed, never lost.
+
+```bash
+docker compose stop rabbitmq
+curl -s -o /dev/null -w 'HTTP %{http_code} in %{time_total}s\n' -X POST localhost:8080/v1/readings \
+  -H 'X-Device-Key: local-key-bp-002' -H 'Content-Type: application/json' -d "{\"readings\":[$(reading 195 100)]}"
+                                                                  # HTTP 200 in a few milliseconds
+db "select count(*) as waiting from outbox where sent_at is null" # 1: the event waits in the outbox
+docker compose start rabbitmq
+sleep 15
+db "select count(*) as waiting from outbox where sent_at is null" # 0: sent once RabbitMQ was back
+db "select reason, coach_id from alerts order by id desc limit 1" # systolic 195 above 170 | coach-ben
+```
+
+While RabbitMQ is down, the service log shows Spring's reconnect attempts and our "Could not send outbox events"
+once; that's expected.
+
+## 10. Load test
+
+With the stack running:
+
+```bash
 docker run --rm -i --network vitallink_default -e BASE_URL=http://app:8080 grafana/k6:2.3.0 run - < loadtest/burst.js
 ```
-It takes about 100 seconds and prints requests per second, latency (p50, p95, p99) and whether the two thresholds passed (fewer than 1% errors, p95 under 500 ms). The network name comes from the project folder name; if yours differs, find it with `docker network ls`.
+
+It takes about 100 seconds and prints requests per second, latency (p50, p95, p99) and whether both thresholds
+passed (fewer than 1% errors, p95 under 500 ms). The README has the results and the bottleneck analysis. The network
+name comes from the project folder name; if yours differs, find it with `docker network ls`.
 
 While it runs, these show where time goes:
 
@@ -156,11 +253,12 @@ While it runs, these show where time goes:
 |---|---|
 | CPU of each container | `docker stats` |
 | Requests waiting for a database connection | `curl -s localhost:8080/actuator/metrics/hikaricp.connections.pending` |
-| Alert backlog | `docker compose exec postgres psql -U vitallink -d vitallink -c 'select count(*) from outbox where sent_at is null'` |
+| Alert backlog | `db "select count(*) from outbox where sent_at is null"` |
 
-To try a bigger connection pool: `DB_POOL_SIZE=20 docker compose up -d app`. The test leaves millions of rows behind; `docker compose down -v` starts again from an empty database.
+To try a bigger connection pool: `DB_POOL_SIZE=20 docker compose up -d app`. The test leaves millions of rows behind;
+`docker compose down -v` starts again from an empty database.
 
-## Build and test
+## 11. Build and tests
 
 | Task | Command |
 |---|---|
@@ -168,20 +266,32 @@ To try a bigger connection pool: `DB_POOL_SIZE=20 docker compose up -d app`. The
 | Tests only | `./mvnw test` |
 | Fix formatting | `./mvnw spotless:apply` |
 
-Tests start their own PostgreSQL in Docker (Testcontainers), so Docker must be running. They don't use the `docker compose` database.
+Tests start their own PostgreSQL, RabbitMQ and Redis in Docker (Testcontainers), so Docker must be running; they
+don't use the `docker compose` stack.
+
+## 12. Running the service from source (for development)
+
+Start only the dependencies, then run the service from your IDE (`ReadingsServiceApplication`) or Maven:
+
+```bash
+docker compose up -d postgres rabbitmq redis
+./mvnw spring-boot:run
+```
+
+Don't run it this way and in Docker at the same time: both use port 8080 (`docker compose stop app` first).
 
 ## Stop and reset
 
 | Task | Command | Data |
 |---|---|---|
-| Stop the service | `docker compose stop app`, or `Ctrl+C` if it runs from source | – |
 | Stop everything | `docker compose stop` | kept |
-| Remove the containers | `docker compose down` | kept (in a Docker volume); the Redis cache is emptied, which is harmless |
+| Remove the containers | `docker compose down` | kept (in Docker volumes) |
 | Start from an empty database | `docker compose down -v` | **deleted** |
 
 ## Configuration
 
-Every setting has a local default, so nothing needs to be set to run locally. To override, copy `.env.example` to `.env` and edit it.
+Every setting has a local default, so nothing needs to be set to run locally. To override, copy `.env.example` to
+`.env` and edit it.
 
 - `docker compose` reads `.env` automatically.
 - `./mvnw spring-boot:run` does **not**. Load it into your shell first:

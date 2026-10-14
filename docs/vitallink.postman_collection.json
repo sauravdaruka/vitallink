@@ -1,0 +1,1023 @@
+{
+  "info": {
+    "name": "VitalLink Readings & Alerting",
+    "description": "Requests for every behaviour in docs/runbook.md, in the same order. Start the stack first (docker compose up --build -d), then Run collection: each request checks its own result. Database, Redis and failure-mode checks (stopping Redis or RabbitMQ) are in the runbook, since Postman can't reach them.\n\nDevice keys are local demo keys from the seed data.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080"
+    },
+    {
+      "key": "rabbitUrl",
+      "value": "http://localhost:15672"
+    },
+    {
+      "key": "rabbitUser",
+      "value": "vitallink"
+    },
+    {
+      "key": "rabbitPassword",
+      "value": "vitallink"
+    },
+    {
+      "key": "keyBp001",
+      "value": "local-key-bp-001"
+    },
+    {
+      "key": "keyBp002",
+      "value": "local-key-bp-002"
+    },
+    {
+      "key": "keyBp003",
+      "value": "local-key-bp-003"
+    }
+  ],
+  "item": [
+    {
+      "name": "0. Health",
+      "item": [
+        {
+          "name": "Service is up",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/actuator/health"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"UP\", () => pm.expect(pm.response.json().status).to.eql(\"UP\"));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "1. Device authentication",
+      "item": [
+        {
+          "name": "No key \u2192 401",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/readings",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"readings\": [\n  {\"readingId\": \"{{$guid}}\", \"metricType\": \"BLOOD_PRESSURE\", \"systolic\": 120, \"diastolic\": 80, \"pulse\": 74, \"measuredAt\": \"{{$isoTimestamp}}\"}\n]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 401\", () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Unknown key \u2192 401",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Device-Key",
+                "value": "wrong-key"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/readings",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"readings\": [\n  {\"readingId\": \"{{$guid}}\", \"metricType\": \"BLOOD_PRESSURE\", \"systolic\": 120, \"diastolic\": 80, \"pulse\": 74, \"measuredAt\": \"{{$isoTimestamp}}\"}\n]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 401\", () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Revoked key \u2192 401",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Device-Key",
+                "value": "local-key-bp-003-old"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/readings",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"readings\": [\n  {\"readingId\": \"{{$guid}}\", \"metricType\": \"BLOOD_PRESSURE\", \"systolic\": 120, \"diastolic\": 80, \"pulse\": 74, \"measuredAt\": \"{{$isoTimestamp}}\"}\n]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 401\", () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Device claims another patient \u2192 403",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Device-Key",
+                "value": "{{keyBp001}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/readings",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"patientId\": \"patient-002\", \"readings\": [\n  {\"readingId\": \"{{$guid}}\", \"metricType\": \"BLOOD_PRESSURE\", \"systolic\": 120, \"diastolic\": 80, \"pulse\": 74, \"measuredAt\": \"{{$isoTimestamp}}\"}\n]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "bp-001 belongs to patient-001. patientId in the body is optional; if sent, it must match."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 403\", () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2. Readings: happy path and duplicates",
+      "item": [
+        {
+          "name": "Send one reading \u2192 ACCEPTED",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Device-Key",
+                "value": "{{keyBp001}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/readings",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"readings\": [\n  {\"readingId\": \"{{normalReadingId}}\", \"metricType\": \"BLOOD_PRESSURE\", \"systolic\": 120, \"diastolic\": 80, \"pulse\": 74, \"measuredAt\": \"{{normalMeasuredAt}}\"}\n]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "ACCEPTED means stored in PostgreSQL: the device can delete its copy."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"normalReadingId\", pm.variables.replaceIn(\"{{$guid}}\"));",
+                  "pm.collectionVariables.set(\"normalMeasuredAt\", new Date().toISOString().replace(/\\.\\d+Z$/, \"Z\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));",
+                  "const results = pm.response.json().results;",
+                  "pm.test(\"reading 1 is ACCEPTED\", () => pm.expect(results[0].status).to.eql(\"ACCEPTED\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Send the same reading again \u2192 DUPLICATE",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Device-Key",
+                "value": "{{keyBp001}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/readings",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"readings\": [\n  {\"readingId\": \"{{normalReadingId}}\", \"metricType\": \"BLOOD_PRESSURE\", \"systolic\": 120, \"diastolic\": 80, \"pulse\": 74, \"measuredAt\": \"{{normalMeasuredAt}}\"}\n]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "A device retry (same readingId and measuredAt). Nothing is stored or alerted twice."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));",
+                  "const results = pm.response.json().results;",
+                  "pm.test(\"reading 1 is DUPLICATE\", () => pm.expect(results[0].status).to.eql(\"DUPLICATE\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Batch with one invalid reading \u2192 per-reading results",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Device-Key",
+                "value": "{{keyBp002}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/readings",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"readings\": [\n  {\"readingId\": \"{{$guid}}\", \"metricType\": \"BLOOD_PRESSURE\", \"systolic\": 130, \"diastolic\": 85, \"pulse\": 74, \"measuredAt\": \"{{$isoTimestamp}}\"},\n  {\"readingId\": \"{{$guid}}\", \"metricType\": \"BLOOD_PRESSURE\", \"systolic\": 70, \"diastolic\": 90, \"pulse\": 74, \"measuredAt\": \"{{$isoTimestamp}}\"},\n  {\"readingId\": \"{{$guid}}\", \"metricType\": \"BLOOD_PRESSURE\", \"systolic\": 125, \"diastolic\": 82, \"pulse\": 74, \"measuredAt\": \"{{$isoTimestamp}}\"}\n]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "A device flushing its offline buffer. The middle reading has systolic below diastolic."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));",
+                  "const results = pm.response.json().results;",
+                  "pm.test(\"reading 1 is ACCEPTED\", () => pm.expect(results[0].status).to.eql(\"ACCEPTED\"));",
+                  "pm.test(\"reading 2 is REJECTED\", () => pm.expect(results[1].status).to.eql(\"REJECTED\"));",
+                  "pm.test(\"reading 3 is ACCEPTED\", () => pm.expect(results[2].status).to.eql(\"ACCEPTED\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Empty batch \u2192 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Device-Key",
+                "value": "{{keyBp001}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/readings",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"readings\": []}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 400\", () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Malformed JSON \u2192 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Device-Key",
+                "value": "{{keyBp001}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/readings",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"readings\": [",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 400\", () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3. Alerts",
+      "item": [
+        {
+          "name": "High reading for patient-001 \u2192 ACCEPTED",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Device-Key",
+                "value": "{{keyBp001}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/readings",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"readings\": [\n  {\"readingId\": \"{{alertReadingId}}\", \"metricType\": \"BLOOD_PRESSURE\", \"systolic\": 185, \"diastolic\": 112, \"pulse\": 74, \"measuredAt\": \"{{alertMeasuredAt}}\"}\n]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Breaks systolic 180 and diastolic 110. The device gets its answer before any alert work happens."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"alertReadingId\", pm.variables.replaceIn(\"{{$guid}}\"));",
+                  "pm.collectionVariables.set(\"alertMeasuredAt\", new Date().toISOString().replace(/\\.\\d+Z$/, \"Z\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));",
+                  "const results = pm.response.json().results;",
+                  "pm.test(\"reading 1 is ACCEPTED\", () => pm.expect(results[0].status).to.eql(\"ACCEPTED\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Same high reading again \u2192 DUPLICATE (no second alert)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Device-Key",
+                "value": "{{keyBp001}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/readings",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"readings\": [\n  {\"readingId\": \"{{alertReadingId}}\", \"metricType\": \"BLOOD_PRESSURE\", \"systolic\": 185, \"diastolic\": 112, \"pulse\": 74, \"measuredAt\": \"{{alertMeasuredAt}}\"}\n]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));",
+                  "const results = pm.response.json().results;",
+                  "pm.test(\"reading 1 is DUPLICATE\", () => pm.expect(results[0].status).to.eql(\"DUPLICATE\"));",
+                  "setTimeout(() => {}, 1500);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Asha's queue has exactly one alert for that reading",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/v1/coaches/coach-asha/alerts",
+            "description": "Went through the outbox, RabbitMQ and the alert worker, which also recorded a notification for coach-asha (see the runbook's db checks)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));",
+                  "const mine = pm.response.json().alerts.filter(a => a.measuredAt === pm.collectionVariables.get(\"alertMeasuredAt\") && a.systolic === 185);",
+                  "pm.test(\"one alert, despite the retry\", () => pm.expect(mine.length).to.eql(1));",
+                  "pm.test(\"reason names the broken limits\", () => pm.expect(mine[0].reason).to.include(\"systolic 185 above 180\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Low reading for patient-002 \u2192 alert for coach-ben",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Device-Key",
+                "value": "{{keyBp002}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/readings",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"readings\": [\n  {\"readingId\": \"{{$guid}}\", \"metricType\": \"BLOOD_PRESSURE\", \"systolic\": 85, \"diastolic\": 60, \"pulse\": 74, \"measuredAt\": \"{{$isoTimestamp}}\"}\n]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));",
+                  "const results = pm.response.json().results;",
+                  "pm.test(\"reading 1 is ACCEPTED\", () => pm.expect(results[0].status).to.eql(\"ACCEPTED\"));",
+                  "setTimeout(() => {}, 1500);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Ben's queue shows the low reading",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/v1/coaches/coach-ben/alerts"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"systolic 85 below 90\", () => pm.expect(pm.response.json().alerts[0].reason).to.include(\"systolic 85 below 90\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Patient with no coach \u2192 stored, nobody notified",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Device-Key",
+                "value": "{{keyBp003}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/readings",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"readings\": [\n  {\"readingId\": \"{{$guid}}\", \"metricType\": \"BLOOD_PRESSURE\", \"systolic\": 190, \"diastolic\": 100, \"pulse\": 74, \"measuredAt\": \"{{$isoTimestamp}}\"}\n]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "The alert is stored with no coach and the service logs a warning (docker compose logs app | grep 'no coach')."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));",
+                  "const results = pm.response.json().results;",
+                  "pm.test(\"reading 1 is ACCEPTED\", () => pm.expect(results[0].status).to.eql(\"ACCEPTED\"));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "4. Read APIs",
+      "item": [
+        {
+          "name": "Latest readings for patient-001",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/v1/patients/patient-001/readings/latest?limit=5"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"newest first\", () => { const r = pm.response.json().readings; pm.expect(r.length).to.be.above(0); for (let i = 1; i < r.length; i++) pm.expect(r[i - 1].measuredAt >= r[i].measuredAt).to.be.true; });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Readings in a time range (last 24 h)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/v1/patients/patient-002/readings?from={{from}}&to={{to}}"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const now = new Date();",
+                  "pm.collectionVariables.set(\"to\", new Date(now.getTime() + 60000).toISOString());",
+                  "pm.collectionVariables.set(\"from\", new Date(now.getTime() - 86400000).toISOString());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"has readings\", () => pm.expect(pm.response.json().readings.length).to.be.above(0));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Range with from after to \u2192 400",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/v1/patients/patient-002/readings?from=2026-01-02T00:00:00Z&to=2026-01-01T00:00:00Z"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 400\", () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Range over 90 days \u2192 400",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/v1/patients/patient-002/readings?from=2025-01-01T00:00:00Z&to=2026-01-01T00:00:00Z"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 400\", () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Coach alert queue (coach-asha)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/v1/coaches/coach-asha/alerts"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "5. AI reading summary (Part C)",
+      "item": [
+        {
+          "name": "Summary for patient-001 \u2192 LLM (stub)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/v1/patients/patient-001/summary"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));",
+                  "const s = pm.response.json();",
+                  "pm.test(\"source LLM\", () => pm.expect(s.source).to.eql(\"LLM\"));",
+                  "pm.test(\"facts computed in code\", () => pm.expect(s.facts.readingCount).to.be.above(0));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Patient with no readings \u2192 FALLBACK",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/v1/patients/patient-999/summary"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"source FALLBACK\", () => pm.expect(pm.response.json().source).to.eql(\"FALLBACK\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "days=0 \u2192 400",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/v1/patients/patient-001/summary?days=0"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 400\", () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "6. Threshold change (care-plan event) and cache",
+      "item": [
+        {
+          "name": "150/90 is under the limit (180) \u2192 no alert",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Device-Key",
+                "value": "{{keyBp001}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/readings",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"readings\": [\n  {\"readingId\": \"{{$guid}}\", \"metricType\": \"BLOOD_PRESSURE\", \"systolic\": 150, \"diastolic\": 90, \"pulse\": 74, \"measuredAt\": \"{{$isoTimestamp}}\"}\n]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));",
+                  "const results = pm.response.json().results;",
+                  "pm.test(\"reading 1 is ACCEPTED\", () => pm.expect(results[0].status).to.eql(\"ACCEPTED\"));",
+                  "setTimeout(() => {}, 1000);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Care plan lowers systolic limit to 140 (RabbitMQ)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{rabbitUrl}}/api/exchanges/%2F/careplan.events/publish",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"routing_key\": \"ThresholdsChanged\",\n  \"properties\": {\n    \"content_type\": \"application/json\"\n  },\n  \"payload_encoding\": \"string\",\n  \"payload\": \"{\\\"patientId\\\": \\\"patient-001\\\", \\\"thresholds\\\": [{\\\"metric\\\": \\\"SYSTOLIC\\\", \\\"below\\\": 90, \\\"above\\\": 140}, {\\\"metric\\\": \\\"DIASTOLIC\\\", \\\"below\\\": 50, \\\"above\\\": 110}, {\\\"metric\\\": \\\"PULSE\\\", \\\"below\\\": 40, \\\"above\\\": 130}]}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "basic",
+              "basic": [
+                {
+                  "key": "username",
+                  "value": "{{rabbitUser}}"
+                },
+                {
+                  "key": "password",
+                  "value": "{{rabbitPassword}}"
+                }
+              ]
+            },
+            "description": "Plays the care-plan system: publishes ThresholdsChanged through RabbitMQ's management API. The service updates its copy in PostgreSQL and deletes the cached limits in Redis."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"routed\", () => pm.expect(pm.response.json().routed).to.be.true);",
+                  "setTimeout(() => {}, 2000);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "150/90 again \u2192 now breaks the new limit",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Device-Key",
+                "value": "{{keyBp001}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/readings",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"readings\": [\n  {\"readingId\": \"{{$guid}}\", \"metricType\": \"BLOOD_PRESSURE\", \"systolic\": 150, \"diastolic\": 90, \"pulse\": 74, \"measuredAt\": \"{{$isoTimestamp}}\"}\n]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));",
+                  "const results = pm.response.json().results;",
+                  "pm.test(\"reading 1 is ACCEPTED\", () => pm.expect(results[0].status).to.eql(\"ACCEPTED\"));",
+                  "setTimeout(() => {}, 1500);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Asha's newest alert: systolic 150 above 140",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/v1/coaches/coach-asha/alerts?limit=1"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"new limit applied\", () => pm.expect(pm.response.json().alerts[0].reason).to.include(\"systolic 150 above 140\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Put the limit back to 180",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{rabbitUrl}}/api/exchanges/%2F/careplan.events/publish",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"routing_key\": \"ThresholdsChanged\",\n  \"properties\": {\n    \"content_type\": \"application/json\"\n  },\n  \"payload_encoding\": \"string\",\n  \"payload\": \"{\\\"patientId\\\": \\\"patient-001\\\", \\\"thresholds\\\": [{\\\"metric\\\": \\\"SYSTOLIC\\\", \\\"below\\\": 90, \\\"above\\\": 180}, {\\\"metric\\\": \\\"DIASTOLIC\\\", \\\"below\\\": 50, \\\"above\\\": 110}, {\\\"metric\\\": \\\"PULSE\\\", \\\"below\\\": 40, \\\"above\\\": 130}]}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "basic",
+              "basic": [
+                {
+                  "key": "username",
+                  "value": "{{rabbitUser}}"
+                },
+                {
+                  "key": "password",
+                  "value": "{{rabbitPassword}}"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));",
+                  "setTimeout(() => {}, 2000);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

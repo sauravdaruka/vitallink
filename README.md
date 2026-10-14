@@ -2,6 +2,16 @@
 
 This service takes in vitals from connected medical devices, handles duplicate retries, stores the readings and raises alerts for care coaches. Alerting happens asynchronously so that ingestion stays fast during the morning peak (6-9 AM).
 
+## Where to find each part
+
+| Part | Where |
+|---|---|
+| A: the service | this README, and [docs/runbook.md](docs/runbook.md) to run and test it |
+| B: system design (with diagram and the 7:15 AM incident) | [docs/design.md](docs/design.md) |
+| C: AI reading summary | [AI reading summary](#ai-reading-summary-part-c) |
+| D: how I worked with AI | [How I worked](#how-i-worked-part-d) |
+| E: conventions and the code-review take | [Design decisions & conventions](#design-decisions--conventions-part-e) |
+
 ## Scope
 
 What this service covers:
@@ -20,6 +30,8 @@ What I am not doing, and why:
 docker compose up --build -d
 ```
 Only Docker is needed. This starts the service with PostgreSQL, RabbitMQ and Redis and loads demo data. Then follow [docs/runbook.md](docs/runbook.md) for example requests (the happy path, a duplicate, an alert, a threshold change), checks and troubleshooting. Tests: `./mvnw verify` (needs Java 25 and Docker).
+
+**Prefer Postman?** Import [docs/vitallink.postman_collection.json](docs/vitallink.postman_collection.json) and run it in order (Run collection). It has 29 requests in 7 folders that follow the runbook: device authentication, readings and duplicates, an alert reaching the coach, the read APIs, the AI summary and a threshold change. Each request checks its own result. The URLs and demo device keys are collection variables, so nothing needs setting up. Checks that need a terminal (database rows, stopping Redis or RabbitMQ) stay in the runbook.
 
 ## Assumptions
 
@@ -79,7 +91,7 @@ Whole-request errors use the standard JSON error format (RFC 9457):
 | `401` | the key is missing, unknown or revoked |
 | `403` | `patientId` doesn't match the device's patient |
 | `413` | more than 500 readings |
-| `503` + `Retry-After` | the database is overloaded; retry after a short, random delay |
+| `500` | no database connection was free within 2 s (overload). Production answers `503` + `Retry-After` instead; see [Left out on purpose](#left-out-on-purpose) |
 
 A reading is rejected if it is more than 30 days old.
 
