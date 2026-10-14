@@ -57,6 +57,8 @@ readings:
     # days-back also matches the oldest reading we accept.
     days-back: 30
     days-ahead: 30
+    # Runs at startup and then on this schedule (UTC).
+    cron: "0 0 * * * *"
   ingest:
     # Bigger batches get 413, so one request can't hold a database connection for long.
     max-batch-size: 500
@@ -67,6 +69,10 @@ outbox:
     interval: 200ms
     batch-size: 100
     confirm-timeout-millis: 5000
+  cleanup:
+    # Sent events are kept this long, to investigate problems, then removed so the table stays small.
+    retention: 7d
+    cron: "0 30 * * * *"
 
 thresholds:
   cache:

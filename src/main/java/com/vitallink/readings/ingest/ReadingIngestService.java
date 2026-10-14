@@ -19,10 +19,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
-import org.springframework.http.ProblemDetail;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
-import org.springframework.web.ErrorResponseException;
+import org.springframework.web.server.ResponseStatusException;
 
 @Service
 class ReadingIngestService {
@@ -60,14 +59,15 @@ class ReadingIngestService {
         if (request.patientId() != null && !request.patientId().equals(device.patientId())) {
             // Only the device ID is logged: patient IDs are health data.
             log.warn("Device {} sent readings for a patient it is not assigned to", device.deviceId());
-            throw problem(HttpStatus.FORBIDDEN, "this device is not assigned to that patient");
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "this device is not assigned to that patient");
         }
         List<ReadingInput> readings = request.readings() == null ? List.of() : request.readings();
         if (readings.isEmpty()) {
-            throw problem(HttpStatus.BAD_REQUEST, "readings must contain at least one reading");
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "readings must contain at least one reading");
         }
         if (readings.size() > maxBatchSize) {
-            throw problem(HttpStatus.CONTENT_TOO_LARGE, "a batch can hold at most %d readings".formatted(maxBatchSize));
+            throw new ResponseStatusException(
+                    HttpStatus.CONTENT_TOO_LARGE, "a batch can hold at most %d readings".formatted(maxBatchSize));
         }
 
         Instant now = clock.instant();
@@ -101,7 +101,7 @@ class ReadingIngestService {
     private Set<UUID> storeAndRaiseEvents(AuthenticatedDevice device, List<ReadingInput> readings) {
         // Looked up before the transaction starts, so the transaction stays short.
         List<Threshold> limits = thresholds.forPatient(device.patientId());
-        return transactions.execute(transaction -> {
+        return transactions.execute(_ -> {
             Set<UUID> stored = writer.insertNew(device, readings);
             for (ReadingInput reading : readings) {
                 if (!stored.contains(reading.readingId())) {
@@ -128,9 +128,5 @@ class ReadingIngestService {
             }
             return stored;
         });
-    }
-
-    private static ErrorResponseException problem(HttpStatus status, String detail) {
-        return new ErrorResponseException(status, ProblemDetail.forStatusAndDetail(status, detail), null);
     }
 }

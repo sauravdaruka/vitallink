@@ -130,7 +130,7 @@ class SummaryService {
                 WHERE patient_id = ? AND measured_at >= ?
                 ORDER BY measured_at
                 """,
-                (row, i) -> new SummaryFacts.Reading(
+                (row, _) -> new SummaryFacts.Reading(
                         row.getTimestamp("measured_at").toInstant(), row.getInt("systolic"), row.getInt("diastolic")),
                 patientId,
                 Timestamp.from(from));

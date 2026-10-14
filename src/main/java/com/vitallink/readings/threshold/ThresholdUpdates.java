@@ -53,7 +53,7 @@ class ThresholdUpdates {
         } catch (JacksonException e) {
             throw new AmqpRejectAndDontRequeueException("Unreadable ThresholdsChanged event", e);
         }
-        transactions.executeWithoutResult(transaction -> {
+        transactions.executeWithoutResult(_ -> {
             jdbc.update("DELETE FROM thresholds WHERE patient_id = ?", update.patientId());
             for (Threshold threshold : update.thresholds()) {
                 jdbc.update(

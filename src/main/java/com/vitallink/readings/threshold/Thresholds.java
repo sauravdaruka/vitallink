@@ -28,7 +28,7 @@ public class Thresholds {
     List<Threshold> load(String patientId) {
         return jdbc.query(
                 "SELECT metric, below, above FROM thresholds WHERE patient_id = ? ORDER BY metric",
-                (row, i) -> new Threshold(
+                (row, _) -> new Threshold(
                         Metric.valueOf(row.getString("metric")),
                         row.getObject("below", Integer.class),
                         row.getObject("above", Integer.class)),

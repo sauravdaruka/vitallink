@@ -56,7 +56,7 @@ class ReadingWriter {
                                     "text", column(readings, r -> r.measuredAt().toString())));
                     return statement;
                 },
-                (row, i) -> row.getObject("reading_id", UUID.class));
+                (row, _) -> row.getObject("reading_id", UUID.class));
         return new HashSet<>(inserted);
     }
 

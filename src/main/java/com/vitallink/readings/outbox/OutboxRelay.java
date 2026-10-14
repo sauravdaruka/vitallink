@@ -2,6 +2,7 @@ package com.vitallink.readings.outbox;
 
 import java.nio.charset.StandardCharsets;
 import java.sql.Array;
+import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -37,6 +38,7 @@ class OutboxRelay {
     private final RabbitTemplate rabbit;
     private final int batchSize;
     private final long confirmTimeoutMillis;
+    private final Duration sentRetention;
     // Logged once when sending starts failing and once when it recovers, not every 200 ms during an outage.
     private final AtomicBoolean failing = new AtomicBoolean();
 
@@ -45,12 +47,14 @@ class OutboxRelay {
             TransactionTemplate transactions,
             RabbitTemplate rabbit,
             @Value("${outbox.relay.batch-size}") int batchSize,
-            @Value("${outbox.relay.confirm-timeout-millis}") long confirmTimeoutMillis) {
+            @Value("${outbox.relay.confirm-timeout-millis}") long confirmTimeoutMillis,
+            @Value("${outbox.cleanup.retention}") Duration sentRetention) {
         this.jdbc = jdbc;
         this.transactions = transactions;
         this.rabbit = rabbit;
         this.batchSize = batchSize;
         this.confirmTimeoutMillis = confirmTimeoutMillis;
+        this.sentRetention = sentRetention;
     }
 
     @Scheduled(fixedDelayString = "${outbox.relay.interval}")
@@ -58,7 +62,7 @@ class OutboxRelay {
         try {
             int sent;
             do {
-                sent = transactions.execute(transaction -> sendBatch());
+                sent = transactions.execute(_ -> sendBatch());
             } while (sent == batchSize);
             if (failing.compareAndSet(true, false)) {
                 log.info("Sending outbox events works again");
@@ -84,7 +88,7 @@ class OutboxRelay {
                 LIMIT ?
                 FOR UPDATE SKIP LOCKED
                 """,
-                (row, i) -> new PendingEvent(
+                (row, _) -> new PendingEvent(
                         row.getLong("id"),
                         row.getObject("event_id", UUID.class),
                         row.getString("event_type"),
@@ -120,11 +124,12 @@ class OutboxRelay {
                 .build();
     }
 
-    /** Sent events are kept for a week, to investigate problems, then removed so the table stays small. */
-    @Scheduled(cron = "0 30 * * * *", zone = "UTC")
+    /** Sent events are kept for a while, to investigate problems, then removed so the table stays small. */
+    @Scheduled(cron = "${outbox.cleanup.cron}", zone = "UTC")
     void removeOldSentEvents() {
         try {
-            int removed = jdbc.update("DELETE FROM outbox WHERE sent_at < now() - interval '7 days'");
+            int removed = jdbc.update(
+                    "DELETE FROM outbox WHERE sent_at < now() - make_interval(secs => ?)", sentRetention.toSeconds());
             log.debug("Removed {} old outbox events", removed);
         } catch (RuntimeException e) {
             log.warn("Could not remove old outbox events", e);

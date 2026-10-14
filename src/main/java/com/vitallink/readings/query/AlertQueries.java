@@ -23,7 +23,7 @@ class AlertQueries {
                 ORDER BY created_at DESC
                 LIMIT ?
                 """,
-                (row, i) -> new AlertView(
+                (row, _) -> new AlertView(
                         row.getLong("id"),
                         row.getString("patient_id"),
                         row.getObject("systolic", Integer.class),

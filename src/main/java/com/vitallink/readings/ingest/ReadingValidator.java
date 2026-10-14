@@ -12,6 +12,23 @@ import java.util.Optional;
  */
 final class ReadingValidator {
 
+    static final String BLOOD_PRESSURE = "BLOOD_PRESSURE";
+
+    // Must stay the same as the CHECK constraints in the migration.
+    private static final Range SYSTOLIC = new Range("systolic", 40, 300);
+    private static final Range DIASTOLIC = new Range("diastolic", 20, 200);
+    private static final Range PULSE = new Range("pulse", 20, 250);
+
+    private record Range(String field, int min, int max) {
+        boolean excludes(int value) {
+            return value < min || value > max;
+        }
+
+        String problem() {
+            return "%s must be between %d and %d".formatted(field, min, max);
+        }
+    }
+
     private final Duration maxAge;
 
     ReadingValidator(Duration maxAge) {
@@ -26,20 +43,20 @@ final class ReadingValidator {
         if (reading.measuredAt() == null) {
             return Optional.of("measuredAt is required");
         }
-        if (!"BLOOD_PRESSURE".equals(reading.metricType())) {
-            return Optional.of("metricType must be BLOOD_PRESSURE");
+        if (!BLOOD_PRESSURE.equals(reading.metricType())) {
+            return Optional.of("metricType must be " + BLOOD_PRESSURE);
         }
         if (reading.systolic() == null || reading.diastolic() == null) {
             return Optional.of("systolic and diastolic are required");
         }
-        if (outside(reading.systolic(), 40, 300)) {
-            return Optional.of("systolic must be between 40 and 300");
+        if (SYSTOLIC.excludes(reading.systolic())) {
+            return Optional.of(SYSTOLIC.problem());
         }
-        if (outside(reading.diastolic(), 20, 200)) {
-            return Optional.of("diastolic must be between 20 and 200");
+        if (DIASTOLIC.excludes(reading.diastolic())) {
+            return Optional.of(DIASTOLIC.problem());
         }
-        if (reading.pulse() != null && outside(reading.pulse(), 20, 250)) {
-            return Optional.of("pulse must be between 20 and 250");
+        if (reading.pulse() != null && PULSE.excludes(reading.pulse())) {
+            return Optional.of(PULSE.problem());
         }
         if (reading.systolic() <= reading.diastolic()) {
             return Optional.of("systolic must be higher than diastolic");
@@ -48,9 +65,5 @@ final class ReadingValidator {
             return Optional.of("measuredAt is more than %d days old".formatted(maxAge.toDays()));
         }
         return Optional.empty();
-    }
-
-    private static boolean outside(int value, int min, int max) {
-        return value < min || value > max;
     }
 }

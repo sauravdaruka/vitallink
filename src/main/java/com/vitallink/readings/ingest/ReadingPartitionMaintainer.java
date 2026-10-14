@@ -1,6 +1,7 @@
 package com.vitallink.readings.ingest;
 
 import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
@@ -29,8 +30,17 @@ class ReadingPartitionMaintainer {
 
     private static final Logger log = LoggerFactory.getLogger(ReadingPartitionMaintainer.class);
 
-    // Any fixed number works; every app instance must use the same one.
+    // Any fixed number works; every app instance must use the same one, so it is a constant, not config.
     private static final long LOCK_KEY = 4_242_001L;
+
+    // Session-level advisory lock: held by this connection until unlocked, whatever transaction it is in.
+    private static final String TRY_LOCK = "SELECT pg_try_advisory_lock(?)";
+    private static final String UNLOCK = "SELECT pg_advisory_unlock(?)";
+
+    // DDL can't take bind parameters, so the name and bounds are put in the text. They are built only from a
+    // LocalDate, never from user input, so this is safe.
+    private static final String CREATE_PARTITION =
+            "CREATE TABLE IF NOT EXISTS %s PARTITION OF readings FOR VALUES FROM ('%sT00:00:00Z') TO ('%sT00:00:00Z')";
 
     private static final DateTimeFormatter NAME_FORMAT = DateTimeFormatter.ofPattern("yyyy_MM_dd");
 
@@ -51,7 +61,7 @@ class ReadingPartitionMaintainer {
     }
 
     @EventListener(ApplicationReadyEvent.class)
-    @Scheduled(cron = "0 0 * * * *", zone = "UTC")
+    @Scheduled(cron = "${readings.partitions.cron}", zone = "UTC")
     void createPartitions() {
         try {
             jdbc.execute((ConnectionCallback<Void>) connection -> {
@@ -65,37 +75,36 @@ class ReadingPartitionMaintainer {
 
     /** Only one app instance creates partitions at a time; the others skip this run. */
     private void createWhileHoldingLock(Connection connection) throws SQLException {
+        if (!callLockFunction(connection, TRY_LOCK)) {
+            log.debug("Another instance is creating readings partitions; skipping this run");
+            return;
+        }
         try (Statement statement = connection.createStatement()) {
-            if (!tryLock(statement)) {
-                log.debug("Another instance is creating readings partitions; skipping this run");
-                return;
+            LocalDate today = LocalDate.now(clock);
+            for (LocalDate day = today.minusDays(daysBack);
+                    !day.isAfter(today.plusDays(daysAhead));
+                    day = day.plusDays(1)) {
+                createPartition(statement, day);
             }
-            try {
-                LocalDate today = LocalDate.now(clock);
-                for (LocalDate day = today.minusDays(daysBack);
-                        !day.isAfter(today.plusDays(daysAhead));
-                        day = day.plusDays(1)) {
-                    createPartition(statement, day);
-                }
-            } finally {
-                statement.execute("SELECT pg_advisory_unlock(" + LOCK_KEY + ")");
-            }
+        } finally {
+            callLockFunction(connection, UNLOCK);
         }
     }
 
-    private static boolean tryLock(Statement statement) throws SQLException {
-        try (ResultSet result = statement.executeQuery("SELECT pg_try_advisory_lock(" + LOCK_KEY + ")")) {
-            result.next();
-            return result.getBoolean(1);
+    /** Runs TRY_LOCK or UNLOCK with LOCK_KEY and returns the function's true/false result. */
+    private static boolean callLockFunction(Connection connection, String sql) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setLong(1, LOCK_KEY);
+            try (ResultSet result = statement.executeQuery()) {
+                result.next();
+                return result.getBoolean(1);
+            }
         }
     }
 
     /** One failed day must not stop the others, so each day is created on its own. */
     private static void createPartition(Statement statement, LocalDate day) {
-        // Built only from a LocalDate, never from user input, so it is safe to put in the SQL text.
-        String sql =
-                "CREATE TABLE IF NOT EXISTS %s PARTITION OF readings FOR VALUES FROM ('%sT00:00:00Z') TO ('%sT00:00:00Z')"
-                        .formatted(partitionName(day), day, day.plusDays(1));
+        String sql = CREATE_PARTITION.formatted(partitionName(day), day, day.plusDays(1));
         try {
             statement.execute(sql);
         } catch (SQLException e) {

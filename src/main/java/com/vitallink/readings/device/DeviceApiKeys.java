@@ -26,8 +26,8 @@ class DeviceApiKeys {
                         JOIN devices d ON d.device_id = k.device_id
                         WHERE k.key_hash = ? AND k.revoked_at IS NULL AND d.active
                         """,
-                        (row, i) -> new AuthenticatedDevice(row.getString("device_id"), row.getString("patient_id")),
-                        sha256(apiKey))
+                        (row, _) -> new AuthenticatedDevice(row.getString("device_id"), row.getString("patient_id")),
+                        (Object) sha256(apiKey))
                 .stream()
                 .findFirst();
     }

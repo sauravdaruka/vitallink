@@ -15,7 +15,7 @@ import org.springframework.stereotype.Repository;
 @Repository
 class ReadingQueries {
 
-    private static final RowMapper<ReadingView> TO_VIEW = (row, i) -> new ReadingView(
+    private static final RowMapper<ReadingView> TO_VIEW = (row, _) -> new ReadingView(
             row.getObject("reading_id", UUID.class),
             row.getString("device_id"),
             row.getString("metric_type"),
