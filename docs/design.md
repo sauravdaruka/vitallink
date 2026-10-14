@@ -45,7 +45,16 @@ PostgreSQL stays the first place a reading is saved. Kafka in front would absorb
 | Requests per second (batches of 5) | ~120 | 2,000 |
 | Alert events per second (1% breach) | ~6 | ~100 |
 
-In the load test one instance on a laptop handled about 34,000 readings per second, limited not by CPU but by database work per request: all 10 connections were busy and requests waited for them. The built version breaks in this order:
+**How I got the peak.** The brief gives 1M devices and 50M readings a day, mostly 6–9 AM. The rest are my estimates:
+- **Peak:** 60% of readings in the morning window (~2,800/s), ×3 at the top of the hour and when offline devices reconnect, so I design for **10,000 readings/s**.
+- **Requests:** batches of 5 on average, so ~2,000 write requests/s at peak.
+- **People:** 1.5 devices per patient (~670k patients) and 200 patients per coach (~3,300 coaches), refreshing every ~30 s: ~100–300 read requests/s. The system is **write-heavy**, so the insert path stays lean.
+- **Storage:** ~200 bytes per reading (measured: ~175), so ~10 GB a day; hence daily partitions.
+- **Two red flags:**
+  - 50 readings per device per day is far more than a blood pressure cuff sends, so most volume must come from frequent senders like pulse oximeters;
+  - ~150 alerts per coach per day is more than a person can act on (point 4 below).
+
+In the [load test](load-test.md) one instance on a laptop handled about 34,000 readings per second, limited not by CPU but by database work per request: all 10 connections were busy and requests waited for them. The built version breaks in this order:
 
 1. **Database work and connections.** Each request makes two round trips (the device key lookup and the insert). Cache device keys in Redis, and put PgBouncer in transaction mode in front of PostgreSQL so many autoscaled instances share a few hundred real connections. Raising every instance's pool instead would exceed PostgreSQL's connection limit.
 2. **Overload.** When no connection frees up quickly, answer `503` with `Retry-After` rather than queue. Left out of the built version as a stretch goal; it's the first thing I'd add.
